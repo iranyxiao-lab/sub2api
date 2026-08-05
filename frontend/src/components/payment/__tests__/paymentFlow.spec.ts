@@ -71,9 +71,98 @@ describe('getVisibleMethods', () => {
       usdt_trc20: methodLimit({ fee_rate: 1 }),
     })
   })
+
+  it('keeps TRC20 and ERC20 as separate visible network choices', () => {
+    const visible = getVisibleMethods({
+      usdt_trc20: methodLimit(),
+      usdt_erc20: methodLimit(),
+    })
+
+    expect(Object.keys(visible)).toEqual(['usdt_trc20', 'usdt_erc20'])
+  })
 })
 
 describe('decidePaymentLaunch', () => {
+  it('uses the chain-address flow and never redirects an on-chain order', () => {
+    const decision = decidePaymentLaunch(createOrderResult({
+      payment_type: 'usdt_trc20',
+      pay_url: 'https://should-not-open.example.com',
+      qr_code: 'legacy-qr',
+      onchain_payment: {
+        network: 'tron-mainnet',
+        chain_id: 728126428,
+        token: 'USDT',
+        token_contract: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
+        address: 'TExampleDepositAddress',
+        amount: '88',
+        qr_code: 'TExampleDepositAddress',
+        received_amount: '0',
+        pending_amount: '88',
+        expires_at: '2099-01-01T00:10:00.000Z',
+      },
+    }), {
+      visibleMethod: 'usdt_trc20',
+      orderType: 'balance',
+      isMobile: true,
+    })
+
+    expect(decision.kind).toBe('onchain_waiting')
+    expect(decision.paymentState.payUrl).toBe('')
+    expect(decision.paymentState.qrCode).toBe('TExampleDepositAddress')
+    expect(decision.recovery.onchainPayment?.network).toBe('tron-mainnet')
+  })
+
+  it('keeps network switches isolated from stale addresses and QR payloads', () => {
+    const staleTronResult = createOrderResult({
+      payment_type: 'usdt_trc20',
+      onchain_payment: {
+        network: 'tron-mainnet',
+        chain_id: 728126428,
+        token: 'USDT',
+        token_contract: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
+        address: 'TStaleTronAddress',
+        amount: '88',
+        qr_code: 'TStaleTronAddress',
+        received_amount: '10',
+        pending_amount: '78',
+        expires_at: '2099-01-01T00:10:00.000Z',
+      },
+    })
+
+    const mismatched = decidePaymentLaunch(staleTronResult, {
+      visibleMethod: 'usdt_erc20',
+      orderType: 'balance',
+      isMobile: false,
+    })
+    expect(mismatched.kind).toBe('unhandled')
+
+    const ethereumAddress = '0x1111111111111111111111111111111111111111'
+    const switched = decidePaymentLaunch(createOrderResult({
+      payment_type: 'usdt_erc20',
+      onchain_payment: {
+        network: 'ethereum-mainnet',
+        chain_id: 1,
+        token: 'USDT',
+        token_contract: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+        address: ethereumAddress,
+        amount: '88',
+        qr_code: 'ethereum:stale-or-unsupported-wallet-uri',
+        received_amount: '0',
+        pending_amount: '88',
+        expires_at: '2099-01-01T00:10:00.000Z',
+      },
+    }), {
+      visibleMethod: 'usdt_erc20',
+      orderType: 'balance',
+      isMobile: false,
+    })
+
+    expect(switched.kind).toBe('onchain_waiting')
+    expect(switched.paymentState.paymentType).toBe('usdt_erc20')
+    expect(switched.paymentState.qrCode).toBe(ethereumAddress)
+    expect(switched.paymentState.onchainPayment?.address).toBe(ethereumAddress)
+  })
+
   it('uses Stripe popup waiting flow for desktop Alipay client secret', () => {
     const decision = decidePaymentLaunch(createOrderResult({
       client_secret: 'cs_test',
@@ -293,6 +382,18 @@ describe('decidePaymentLaunch', () => {
 })
 
 describe('buildCreateOrderPayload', () => {
+  it.each(['usdt_trc20', 'usdt_erc20'])('rejects %s for subscription orders', (paymentType) => {
+    expect(() => buildCreateOrderPayload({
+      amount: 88,
+      paymentType,
+      orderType: 'subscription',
+      planId: 7,
+      origin: 'https://app.example.com',
+      isMobile: false,
+      isWechatBrowser: false,
+    })).toThrow('ONCHAIN_BALANCE_RECHARGE_ONLY')
+  })
+
   it('normalizes visible method aliases and attaches a canonical result URL', () => {
     expect(buildCreateOrderPayload({
       amount: 88,
@@ -376,6 +477,91 @@ describe('buildCreateOrderPayload', () => {
 })
 
 describe('readPaymentRecoverySnapshot', () => {
+  it('restores an expired on-chain snapshot for late-payment recovery', () => {
+    const restored = readPaymentRecoverySnapshot(JSON.stringify({
+      orderId: 99,
+      amount: 88,
+      qrCode: 'TExampleDepositAddress',
+      expiresAt: '2024-01-01T00:10:00.000Z',
+      paymentType: 'usdt_trc20',
+      payUrl: '',
+      outTradeNo: 'sub2_onchain_99',
+      clientSecret: '',
+      intentId: '',
+      currency: 'USD',
+      countryCode: '',
+      paymentEnv: '',
+      payAmount: 88,
+      orderType: 'balance',
+      paymentMode: '',
+      resumeToken: '',
+      onchainPayment: {
+        network: 'tron-mainnet',
+        chain_id: 728126428,
+        token: 'USDT',
+        token_contract: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
+        address: 'TExampleDepositAddress',
+        amount: '88',
+        qr_code: 'TExampleDepositAddress',
+        received_amount: '10',
+        pending_amount: '78',
+        expires_at: '2024-01-01T00:10:00.000Z',
+        status: 'REVIEW_REQUIRED',
+      },
+      createdAt: Date.UTC(2024, 0, 1, 0, 0, 0),
+    }), {
+      now: Date.UTC(2024, 0, 2, 0, 0, 0),
+    })
+
+    expect(restored?.onchainPayment?.address).toBe('TExampleDepositAddress')
+    expect(restored?.onchainPayment?.status).toBe('REVIEW_REQUIRED')
+  })
+
+  it('rejects a recovery snapshot whose network or QR belongs to another payment method', () => {
+    const snapshot = {
+      orderId: 99,
+      amount: 88,
+      qrCode: 'TStaleTronAddress',
+      expiresAt: '2099-01-01T00:10:00.000Z',
+      paymentType: 'usdt_erc20',
+      payUrl: '',
+      outTradeNo: 'sub2_onchain_99',
+      clientSecret: '',
+      intentId: '',
+      currency: 'USD',
+      countryCode: '',
+      paymentEnv: '',
+      payAmount: 88,
+      orderType: 'balance',
+      paymentMode: '',
+      resumeToken: '',
+      onchainPayment: {
+        network: 'tron-mainnet',
+        chain_id: 728126428,
+        token: 'USDT',
+        token_contract: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
+        address: 'TStaleTronAddress',
+        amount: '88',
+        qr_code: 'TStaleTronAddress',
+        received_amount: '0',
+        pending_amount: '88',
+        expires_at: '2099-01-01T00:10:00.000Z',
+      },
+      createdAt: Date.UTC(2099, 0, 1, 0, 0, 0),
+    }
+
+    expect(readPaymentRecoverySnapshot(JSON.stringify(snapshot), {
+      now: Date.UTC(2099, 0, 1, 0, 1, 0),
+    })).toBeNull()
+
+    snapshot.onchainPayment.network = 'ethereum-mainnet'
+    snapshot.onchainPayment.chain_id = 1
+    snapshot.onchainPayment.address = '0x1111111111111111111111111111111111111111'
+    expect(readPaymentRecoverySnapshot(JSON.stringify(snapshot), {
+      now: Date.UTC(2099, 0, 1, 0, 1, 0),
+    })).toBeNull()
+  })
+
   it('restores an unexpired snapshot when the resume token matches', () => {
     const snapshot: PaymentRecoverySnapshot = {
       orderId: 33,

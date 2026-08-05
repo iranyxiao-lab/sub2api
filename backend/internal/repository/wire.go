@@ -8,6 +8,7 @@ import (
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/onchain"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
@@ -101,6 +102,17 @@ var ProviderSet = wire.NewSet(
 	NewChannelMonitorRequestTemplateRepository,
 	NewContentModerationRepository,
 	NewAffiliateRepository,
+	NewOnchainRepository,
+	wire.Bind(new(service.OnchainOrderRepository), new(*OnchainRepository)),
+	wire.Bind(new(onchain.TRONScanStore), new(*OnchainRepository)),
+	wire.Bind(new(onchain.TRONScanLeaseStore), new(*OnchainRepository)),
+	wire.Bind(new(onchain.SettlementStore), new(*OnchainRepository)),
+	wire.Bind(new(onchain.TRONSweepStore), new(*OnchainRepository)),
+	wire.Bind(new(onchain.TRONSweepExecutionStore), new(*OnchainRepository)),
+	wire.Bind(new(onchain.EthereumGasFundingStore), new(*OnchainRepository)),
+	wire.Bind(new(onchain.EthereumNonceStore), new(*OnchainRepository)),
+	wire.Bind(new(onchain.EthereumSweepExecutionStore), new(*OnchainRepository)),
+	wire.Bind(new(onchain.TRONBalanceReconciliationStore), new(*OnchainRepository)),
 	NewUserPlatformQuotaRepository,     // T14: user × platform quota
 	NewUserPlatformQuotaServiceAdapter, // T14: adapter → service.UserPlatformQuotaRepository
 

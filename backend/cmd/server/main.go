@@ -136,6 +136,9 @@ func runMainServer() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	if err := validateEthereumOnchainStartup(context.Background(), cfg.Onchain.Ethereum); err != nil {
+		log.Fatalf("Ethereum on-chain startup validation failed: %v", err)
+	}
 	if err := logger.Init(logger.OptionsFromConfig(cfg.Log)); err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}

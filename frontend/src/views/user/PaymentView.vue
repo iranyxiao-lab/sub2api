@@ -26,6 +26,7 @@
             :currency="paymentState.currency || selectedCurrency"
             :out-trade-no="paymentState.outTradeNo"
             :mobile-alipay-deep-link="paymentState.alipayMobilePrecreateDeepLink"
+            :onchain-payment="paymentState.onchainPayment"
             @done="onPaymentDone"
             @success="onPaymentSuccess"
             @settled="onPaymentSettled"
@@ -149,12 +150,15 @@
                   </div>
                 </div>
               </div>
-              <div v-if="enabledMethods.length >= 1" class="card p-6">
+              <div v-if="subscriptionMethods.length >= 1" class="card p-6">
                 <PaymentMethodSelector
                   :methods="subMethodOptions"
                   :selected="selectedMethod"
                   @select="selectedMethod = $event"
                 />
+              </div>
+              <div v-else class="border-y border-gray-200 py-4 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
+                {{ t('payment.noSubscriptionPaymentMethods') }}
               </div>
               <div v-if="feeRate > 0 && selectedPlan.price > 0" class="card p-6">
                 <div class="space-y-2 text-sm">
@@ -278,6 +282,8 @@ import {
   clearPaymentRecoverySnapshot,
   decidePaymentLaunch,
   getVisibleMethods,
+  isOnchainPaymentMethod,
+  isPaymentMethodAllowedForOrderType,
   normalizeVisibleMethod,
   readPaymentRecoverySnapshot,
   type PaymentRecoverySnapshot,
@@ -365,6 +371,7 @@ function emptyPaymentState(): PaymentRecoverySnapshot {
     paymentMode: '',
     resumeToken: '',
     alipayMobilePrecreateDeepLink: false,
+    onchainPayment: undefined,
     createdAt: 0,
   }
 }
@@ -514,6 +521,7 @@ const tabs = computed(() => {
 
 const visibleMethods = computed(() => getVisibleMethods(checkout.value.methods))
 const enabledMethods = computed(() => Object.keys(visibleMethods.value))
+const subscriptionMethods = computed(() => enabledMethods.value.filter(method => !isOnchainPaymentMethod(method)))
 const validAmount = computed(() => amount.value ?? 0)
 const balanceRechargeMultiplier = computed(() => {
   const multiplier = checkout.value.balance_recharge_multiplier
@@ -613,6 +621,7 @@ const methodOptions = computed<PaymentMethodOption[]>(() =>
       type,
       display_name: ml?.display_name,
       fee_rate: ml?.fee_rate ?? 0,
+      unlimited_daily: isOnchainPaymentMethod(type) && ml?.daily_limit === 0,
       available: ml?.available !== false && amountFitsMethod(validAmount.value, type),
     }
   })
@@ -676,13 +685,14 @@ function subscriptionTotalAmountForCurrency(value: number, currency: string): nu
 // Subscription-specific: method options based on gateway pay amount
 const subMethodOptions = computed<PaymentMethodOption[]>(() => {
   const price = selectedPlan.value?.price ?? 0
-  return enabledMethods.value.map((type) => {
+  return subscriptionMethods.value.map((type) => {
     const ml = visibleMethods.value[type]
     const currency = normalizePaymentCurrency(ml?.currency)
     return {
       type,
       display_name: ml?.display_name,
       fee_rate: ml?.fee_rate ?? 0,
+      unlimited_daily: false,
       available: ml?.available !== false && amountFitsMethod(subscriptionTotalAmountForCurrency(price, currency), type),
     }
   })
@@ -690,6 +700,8 @@ const subMethodOptions = computed<PaymentMethodOption[]>(() => {
 
 const canSubmitSubscription = computed(() =>
   selectedPlan.value !== null
+    && isPaymentMethodAllowedForOrderType(selectedMethod.value, 'subscription')
+    && subscriptionMethods.value.includes(selectedMethod.value)
     && amountFitsMethod(subTotalAmount.value, selectedMethod.value)
     && selectedLimit.value?.available !== false
 )
@@ -700,6 +712,16 @@ watch(() => [validAmount.value, selectedMethod.value] as const, ([amt, method]) 
   const available = enabledMethods.value.find((m) => amountFitsMethod(amt, m))
   if (available) selectedMethod.value = available
 })
+
+watch(
+  () => [activeTab.value, selectedPlan.value?.id, subscriptionMethods.value.join('|')] as const,
+  ([tab]) => {
+    if (tab !== 'subscription' && !selectedPlan.value) return
+    if (!subscriptionMethods.value.includes(selectedMethod.value)) {
+      selectedMethod.value = subscriptionMethods.value[0] || ''
+    }
+  },
+)
 
 // Payment button class: follows selected payment method color
 const paymentButtonClass = computed(() => {
@@ -760,15 +782,21 @@ async function handleSubmitRecharge() {
 }
 
 async function confirmSubscribe() {
-  if (!selectedPlan.value || submitting.value) return
+  if (!selectedPlan.value || submitting.value || !canSubmitSubscription.value) return
   await createOrder(selectedPlan.value.price, 'subscription', selectedPlan.value.id)
 }
 
 async function createOrder(orderAmount: number, orderType: OrderType, planId?: number, options: CreateOrderOptions = {}) {
+  const requestType = normalizeVisibleMethod(options.paymentType || selectedMethod.value) || options.paymentType || selectedMethod.value
+  if (!isPaymentMethodAllowedForOrderType(requestType, orderType)) {
+    errorMessage.value = t('payment.errors.onchainBalanceRechargeOnly')
+    errorHintMessage.value = ''
+    appStore.showError(errorMessage.value)
+    return
+  }
   submitting.value = true
   errorMessage.value = ''
   errorHintMessage.value = ''
-  const requestType = normalizeVisibleMethod(options.paymentType || selectedMethod.value) || options.paymentType || selectedMethod.value
   try {
     const payload = buildCreateOrderPayload({
       amount: orderAmount,

@@ -180,6 +180,7 @@ func (PaymentOrder) Edges() []ent.Edge {
 			Field("user_id").
 			Unique().
 			Required(),
+		edge.To("onchain_payment_intent", OnchainPaymentIntent.Type).Unique(),
 	}
 }
 

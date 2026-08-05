@@ -165,6 +165,91 @@
       </template>
     </template>
 
+    <!-- Self-hosted on-chain payment -->
+    <template v-else-if="isOnchainPayment">
+      <div data-test="onchain-payment-panel" class="card p-6">
+        <div class="space-y-5">
+          <div class="text-center">
+            <p class="text-lg font-semibold text-gray-900 dark:text-white">{{ onchainNetworkLabel }}</p>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('payment.onchain.sendExactAmount', { network: onchainNetworkLabel }) }}</p>
+          </div>
+
+          <div class="rounded border border-amber-300 bg-amber-50 p-3 text-sm leading-6 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+            {{ onchainRiskWarning }}
+          </div>
+
+          <div data-test="onchain-status" :class="['rounded border p-3', onchainStatusClass]">
+            <p class="text-sm font-semibold">{{ onchainStatusLabel }}</p>
+            <p class="mt-1 text-xs leading-5 opacity-90">{{ onchainStatusHint }}</p>
+          </div>
+
+          <div class="flex justify-center">
+            <div class="rounded border-2 border-emerald-500 bg-white p-4 dark:border-emerald-400">
+              <canvas ref="qrCanvas" class="mx-auto"></canvas>
+            </div>
+          </div>
+
+          <div class="divide-y divide-gray-100 border-y border-gray-100 text-sm dark:divide-dark-600 dark:border-dark-600">
+            <div class="py-3">
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-gray-500 dark:text-gray-400">{{ t('payment.onchain.amount', { network: onchainNetworkLabel }) }}</span>
+                <button
+                  type="button"
+                  data-test="copy-onchain-amount"
+                  class="inline-flex h-8 w-8 items-center justify-center text-gray-500 hover:text-primary-600 dark:text-gray-400 dark:hover:text-primary-300"
+                  :title="t('payment.onchain.copyAmount')"
+                  @click="copyOnchainValue(onchainPaymentInfo?.amount || '')"
+                >
+                  <Icon name="copy" size="sm" />
+                </button>
+              </div>
+              <p class="mt-1 break-all font-mono text-base font-semibold text-gray-900 dark:text-white">
+                {{ onchainPaymentInfo?.amount }} USDT
+              </p>
+            </div>
+            <div class="py-3">
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-gray-500 dark:text-gray-400">{{ t('payment.onchain.address') }}</span>
+                <button
+                  type="button"
+                  data-test="copy-onchain-address"
+                  class="inline-flex h-8 w-8 items-center justify-center text-gray-500 hover:text-primary-600 dark:text-gray-400 dark:hover:text-primary-300"
+                  :title="t('payment.onchain.copyAddress')"
+                  @click="copyOnchainValue(onchainPaymentInfo?.address || '')"
+                >
+                  <Icon name="copy" size="sm" />
+                </button>
+              </div>
+              <p data-test="onchain-address" class="mt-1 break-all font-mono text-sm font-medium text-gray-900 dark:text-white">
+                {{ onchainPaymentInfo?.address }}
+              </p>
+            </div>
+            <div class="flex items-center justify-between gap-4 py-3">
+              <span class="text-gray-500 dark:text-gray-400">{{ t('payment.onchain.receivedAmount') }}</span>
+              <span class="break-all text-right font-mono font-medium text-gray-900 dark:text-white">
+                {{ onchainPaymentInfo?.received_amount || '0' }} USDT
+              </span>
+            </div>
+            <div class="flex items-center justify-between gap-4 py-3">
+              <span class="text-gray-500 dark:text-gray-400">{{ t('payment.onchain.pendingAmount') }}</span>
+              <span class="break-all text-right font-mono font-medium text-gray-900 dark:text-white">
+                {{ onchainPaymentInfo?.pending_amount || '0' }} USDT
+              </span>
+            </div>
+            <div class="flex items-center justify-between gap-4 py-3">
+              <span class="text-gray-500 dark:text-gray-400">{{ t('payment.qr.expiresIn') }}</span>
+              <span class="font-semibold tabular-nums text-gray-900 dark:text-white">{{ countdownDisplay }}</span>
+            </div>
+          </div>
+
+          <p class="text-center text-xs text-gray-500 dark:text-gray-400">{{ t('payment.onchain.addressQrHint') }}</p>
+          <button type="button" class="btn btn-secondary w-full" @click="handleDone">
+            {{ t('payment.result.backToRecharge') }}
+          </button>
+        </div>
+      </div>
+    </template>
+
     <!-- QR Code Mode -->
     <template v-else-if="showQRCode">
       <div class="card p-6">
@@ -226,7 +311,7 @@ import { paymentAPI } from '@/api/payment'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { getPaymentPopupFeatures, isBuiltInAlipayMethod, isBuiltInWxpayMethod } from '@/components/payment/providerConfig'
 import { currencySymbol, formatPaymentAmount, normalizePaymentCurrency } from '@/components/payment/currency'
-import type { PaymentOrder } from '@/types/payment'
+import type { OnchainPaymentInfo, PaymentOrder } from '@/types/payment'
 import Icon from '@/components/icons/Icon.vue'
 import QRCode from 'qrcode'
 import alipayIcon from '@/assets/icons/alipay.svg'
@@ -237,6 +322,7 @@ import {
   type AlipayDeepLinkLauncher,
   type AlipayDeepLinkState,
 } from './alipayDeepLink'
+import { isOnchainPaymentMethod, onchainPaymentMatchesMethod } from './paymentFlow'
 
 const props = defineProps<{
   orderId: number
@@ -250,6 +336,7 @@ const props = defineProps<{
   currency?: string
   outTradeNo?: string
   mobileAlipayDeepLink?: boolean
+  onchainPayment?: OnchainPaymentInfo
 }>()
 
 type PaymentOutcome = 'success' | 'cancelled' | 'expired'
@@ -266,6 +353,12 @@ const qrUrl = ref('')
 const remainingSeconds = ref(0)
 const cancelling = ref(false)
 const paidOrder = ref<PaymentOrder | null>(null)
+const initialOnchainPayment = props.onchainPayment && onchainPaymentMatchesMethod(props.paymentType, props.onchainPayment)
+  ? props.onchainPayment
+  : null
+const onchainPaymentInfo = ref<OnchainPaymentInfo | null>(initialOnchainPayment)
+const onchainOrderStatus = ref(initialOnchainPayment?.status || 'PENDING')
+const onchainPollingUnavailable = ref(false)
 const deepLinkState = ref<AlipayDeepLinkState>('idle')
 const deepLinkFallbackVisible = ref(false)
 const paymentCurrency = computed(() => normalizePaymentCurrency(props.currency))
@@ -286,6 +379,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 let countdownTimer: ReturnType<typeof setInterval> | null = null
 let verifyAttempts = 0
 let lastVerifyAt = 0
+let consecutivePollFailures = 0
 let alipayLauncher: AlipayDeepLinkLauncher | null = null
 
 const VERIFY_RETRY_INTERVAL_MS = 15000
@@ -293,6 +387,7 @@ const VERIFY_RETRY_MAX_ATTEMPTS = 6
 
 const isAlipay = computed(() => isBuiltInAlipayMethod(props.paymentType))
 const isWxpay = computed(() => isBuiltInWxpayMethod(props.paymentType))
+const isOnchainPayment = computed(() => isOnchainPaymentMethod(props.paymentType) && !!onchainPaymentInfo.value)
 const isMobileAlipayDeepLink = computed(() => props.mobileAlipayDeepLink === true && isAlipay.value && !!qrUrl.value)
 const showQRCode = computed(() => !!qrUrl.value && (!isMobileAlipayDeepLink.value || deepLinkFallbackVisible.value))
 
@@ -326,6 +421,40 @@ const scanHint = computed(() => {
   return ''
 })
 
+const onchainNetworkLabel = computed(() => {
+  const network = onchainPaymentInfo.value?.network.toLowerCase() || ''
+  if (network.includes('tron')) return 'TRON (TRC20)'
+  if (network.includes('ethereum')) return 'Ethereum (ERC20)'
+  return props.paymentType === 'usdt_erc20' ? 'Ethereum (ERC20)' : 'TRON (TRC20)'
+})
+
+const onchainRiskWarning = computed(() => (
+  props.paymentType === 'usdt_erc20'
+    ? t('payment.onchain.erc20RiskWarning')
+    : t('payment.onchain.trc20RiskWarning')
+))
+
+type OnchainDisplayState = 'pending' | 'partial' | 'processing' | 'review' | 'expired' | 'unavailable'
+
+const onchainDisplayState = computed<OnchainDisplayState>(() => {
+  if (onchainPollingUnavailable.value || onchainOrderStatus.value === 'FAILED') return 'unavailable'
+  if (onchainOrderStatus.value === 'REVIEW_REQUIRED') return 'review'
+  if (onchainOrderStatus.value === 'PARTIALLY_PAID') return 'partial'
+  if (onchainOrderStatus.value === 'RECHARGING' || onchainPaymentInfo.value?.status === 'CREDIT_PENDING') return 'processing'
+  if (onchainOrderStatus.value === 'EXPIRED') return 'expired'
+  return 'pending'
+})
+
+const onchainStatusLabel = computed(() => t(`payment.onchain.status.${onchainDisplayState.value}`))
+const onchainStatusHint = computed(() => t(`payment.onchain.statusHint.${onchainDisplayState.value}`))
+const onchainStatusClass = computed(() => {
+  if (onchainDisplayState.value === 'partial') return 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200'
+  if (onchainDisplayState.value === 'processing') return 'border-blue-300 bg-blue-50 text-blue-900 dark:border-blue-500/40 dark:bg-blue-500/10 dark:text-blue-200'
+  if (onchainDisplayState.value === 'review' || onchainDisplayState.value === 'expired') return 'border-orange-300 bg-orange-50 text-orange-900 dark:border-orange-500/40 dark:bg-orange-500/10 dark:text-orange-200'
+  if (onchainDisplayState.value === 'unavailable') return 'border-red-300 bg-red-50 text-red-900 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-200'
+  return 'border-gray-200 bg-gray-50 text-gray-800 dark:border-dark-600 dark:bg-dark-700 dark:text-gray-200'
+})
+
 const countdownDisplay = computed(() => {
   const m = Math.floor(remainingSeconds.value / 60)
   const s = remainingSeconds.value % 60
@@ -349,6 +478,16 @@ function reopenPopup() {
     if (!win || win.closed) {
       window.location.href = props.payUrl
     }
+  }
+}
+
+async function copyOnchainValue(value: string) {
+  if (!value) return
+  try {
+    await navigator.clipboard.writeText(value)
+    appStore.showSuccess(t('payment.onchain.copied'))
+  } catch {
+    appStore.showError(t('payment.onchain.copyFailed'))
   }
 }
 
@@ -421,11 +560,37 @@ async function pollStatus() {
   pollInFlight = true
   try {
     let order = await paymentStore.pollOrderStatus(props.orderId)
-    if (!order) return
+    if (!order) {
+      consecutivePollFailures += 1
+      if (isOnchainPayment.value && consecutivePollFailures >= 3) {
+        onchainPollingUnavailable.value = true
+      }
+      return
+    }
+    consecutivePollFailures = 0
+    onchainPollingUnavailable.value = false
     // 已进入终态则不再处理迟到的响应。
     if (outcome.value) return
     order = await tryRecoverPendingOrder(order)
     if (outcome.value) return
+    if (isOnchainPayment.value) {
+      onchainOrderStatus.value = String(order.status || 'PENDING').toUpperCase()
+      if (order.onchain_payment && onchainPaymentMatchesMethod(props.paymentType, order.onchain_payment)) {
+        onchainPaymentInfo.value = order.onchain_payment
+      }
+      if (order.status === 'COMPLETED' || order.status === 'PAID') {
+        cleanup()
+        paidOrder.value = order
+        setOutcome('success')
+        emit('success')
+      } else if (order.status === 'CANCELLED') {
+        cleanup()
+        setOutcome('cancelled')
+      } else if (order.status === 'REVIEW_REQUIRED') {
+        if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null }
+      }
+      return
+    }
     if (isSuccessStatus(order.status)) {
       cleanup()
       paidOrder.value = order
@@ -445,10 +610,21 @@ async function pollStatus() {
 
 function startCountdown(seconds: number) {
   remainingSeconds.value = Math.max(0, seconds)
-  if (remainingSeconds.value <= 0) { setOutcome('expired'); return }
+  if (remainingSeconds.value <= 0) {
+    if (!isOnchainPayment.value) setOutcome('expired')
+    return
+  }
   countdownTimer = setInterval(() => {
     remainingSeconds.value--
-    if (remainingSeconds.value <= 0) { setOutcome('expired'); cleanup() }
+    if (remainingSeconds.value <= 0) {
+      remainingSeconds.value = 0
+      if (isOnchainPayment.value) {
+        if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null }
+      } else {
+        setOutcome('expired')
+        cleanup()
+      }
+    }
   }, 1000)
 }
 
@@ -485,9 +661,19 @@ if (props.expiresAt) {
 }
 startCountdown(seconds)
 pollTimer = setInterval(pollStatus, 3000)
+if (isOnchainPayment.value) void pollStatus()
 renderQR()
 
 watch([() => qrUrl.value, showQRCode], () => renderQR())
+watch(() => props.onchainPayment, (payment) => {
+  if (!payment || !onchainPaymentMatchesMethod(props.paymentType, payment)) {
+    onchainPaymentInfo.value = null
+    onchainOrderStatus.value = 'PENDING'
+    return
+  }
+  onchainPaymentInfo.value = payment
+  if (payment.status) onchainOrderStatus.value = payment.status
+})
 onMounted(() => {
   if (!isMobileAlipayDeepLink.value) return
   alipayLauncher = createAlipayDeepLinkLauncher({

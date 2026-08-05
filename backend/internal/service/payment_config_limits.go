@@ -313,6 +313,9 @@ func pcAggregateMethodLimits(pt string, instances []*dbent.PaymentProviderInstan
 	if !dailyLimited {
 		ml.DailyLimit = 0
 	}
+	if payment.IsOnchainUSDT(pt) {
+		ml.DailyLimit = 0
+	}
 	return ml
 }
 

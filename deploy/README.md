@@ -25,6 +25,11 @@ This directory contains files for deploying Sub2API on Linux servers and Apple-s
 | `install-datamanagementd.sh` | datamanagementd 一键安装脚本 |
 | `sub2api.service` | Systemd service unit file |
 | `sub2api-datamanagementd.service` | datamanagementd systemd service unit file |
+| `Dockerfile.usdt-signer` | Independent production image for the isolated USDT signer |
+| `docker-compose.usdt-tron.example.yml` | Internal-network TRON node and signer overlay example |
+| `USDT_TRC20_DEPLOYMENT.md` | TRON nodes, mTLS, signer custody, backup, and upgrade guide |
+| `USDT_TRC20_RUNBOOK.md` | TRC20 incident response, safe rollback, cursor recovery, and review runbook |
+| `USDT_ERC20_RUNBOOK.md` | ERC20 finality, RPC, nonce, gas, signer, and replacement incident runbook |
 | `DATAMANAGEMENTD_CN.md` | datamanagementd 部署与联动说明（中文） |
 | `config.example.yaml` | Example configuration file |
 | `EDGE_SECURITY.md` | Reverse proxy, CDN/WAF, trusted proxy, and ingress hardening guide |

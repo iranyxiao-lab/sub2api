@@ -147,6 +147,18 @@ func TestPcAggregateMethodLimits(t *testing.T) {
 			t.Fatalf("DailyLimit = %v, want 1000 (highest cap)", ml.DailyLimit)
 		}
 	})
+
+	t.Run("onchain USDT methods always report unlimited daily amount", func(t *testing.T) {
+		t.Parallel()
+		for _, paymentType := range []string{payment.TypeUSDTTRC20, payment.TypeUSDTERC20} {
+			inst := makeInstance(1, paymentType, paymentType,
+				`{"`+paymentType+`":{"singleMin":10,"singleMax":100000,"dailyLimit":500}}`)
+			ml := pcAggregateMethodLimits(paymentType, []*dbent.PaymentProviderInstance{inst})
+			require.Equal(t, float64(10), ml.SingleMin)
+			require.Equal(t, float64(100000), ml.SingleMax)
+			require.Zero(t, ml.DailyLimit)
+		}
+	})
 }
 
 func TestPcGroupByPaymentType(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"math/big"
 	"net/url"
 	"strconv"
 	"strings"
@@ -13,6 +14,8 @@ import (
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/onchain"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/payment/provider"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -28,6 +31,9 @@ func (s *PaymentService) CreateOrder(ctx context.Context, req CreateOrderRequest
 	}
 	if normalized := NormalizeVisibleMethod(req.PaymentType); normalized != "" {
 		req.PaymentType = normalized
+	}
+	if payment.IsOnchainUSDT(req.PaymentType) && req.OrderType != payment.OrderTypeBalance {
+		return nil, infraerrors.BadRequest("ONCHAIN_BALANCE_RECHARGE_ONLY", "on-chain USDT can only be used for balance recharge")
 	}
 	cfg, err := s.configService.GetPaymentConfig(ctx)
 	if err != nil {
@@ -100,6 +106,12 @@ func (s *PaymentService) CreateOrder(ctx context.Context, req CreateOrderRequest
 	if oauthResp != nil {
 		return oauthResp, nil
 	}
+	if req.PaymentType == payment.TypeUSDTTRC20 {
+		return s.createTRONOrder(ctx, req, user, cfg, orderAmount, limitAmount, feeRate, payAmountStr, payAmount, sel)
+	}
+	if req.PaymentType == payment.TypeUSDTERC20 {
+		return s.createEthereumOrder(ctx, req, user, cfg, orderAmount, limitAmount, feeRate, payAmountStr, payAmount, sel)
+	}
 	order, err := s.createOrderInTx(ctx, req, user, plan, cfg, orderAmount, limitAmount, feeRate, payAmount, sel)
 	if err != nil {
 		return nil, err
@@ -149,7 +161,13 @@ func (s *PaymentService) validateSubOrder(ctx context.Context, req CreateOrderRe
 	return plan, nil
 }
 
+type orderTransactionStep func(context.Context, *dbent.Tx, *dbent.PaymentOrder) (*dbent.PaymentOrder, error)
+
 func (s *PaymentService) createOrderInTx(ctx context.Context, req CreateOrderRequest, user *User, plan *dbent.SubscriptionPlan, cfg *PaymentConfig, orderAmount, limitAmount, feeRate, payAmount float64, sel *payment.InstanceSelection) (*dbent.PaymentOrder, error) {
+	return s.createOrderInTxWithStep(ctx, req, user, plan, cfg, orderAmount, limitAmount, feeRate, payAmount, sel, nil)
+}
+
+func (s *PaymentService) createOrderInTxWithStep(ctx context.Context, req CreateOrderRequest, user *User, plan *dbent.SubscriptionPlan, cfg *PaymentConfig, orderAmount, limitAmount, feeRate, payAmount float64, sel *payment.InstanceSelection, step orderTransactionStep) (*dbent.PaymentOrder, error) {
 	tx, err := s.entClient.Tx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin transaction: %w", err)
@@ -158,8 +176,10 @@ func (s *PaymentService) createOrderInTx(ctx context.Context, req CreateOrderReq
 	if err := s.checkPendingLimit(ctx, tx, req.UserID, cfg.MaxPendingOrders); err != nil {
 		return nil, err
 	}
-	if err := s.checkDailyLimit(ctx, tx, req.UserID, limitAmount, cfg.DailyLimit); err != nil {
-		return nil, err
+	if !payment.IsOnchainUSDT(req.PaymentType) {
+		if err := s.checkDailyLimit(ctx, tx, req.UserID, limitAmount, cfg.DailyLimit); err != nil {
+			return nil, err
+		}
 	}
 	tm := cfg.OrderTimeoutMin
 	if tm <= 0 {
@@ -218,10 +238,267 @@ func (s *PaymentService) createOrderInTx(ctx context.Context, req CreateOrderReq
 	if err != nil {
 		return nil, fmt.Errorf("set recharge code: %w", err)
 	}
+	if step != nil {
+		order, err = step(dbent.NewTxContext(ctx, tx), tx, order)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit order transaction: %w", err)
 	}
 	return order, nil
+}
+
+func (s *PaymentService) createTRONOrder(ctx context.Context, req CreateOrderRequest, user *User, cfg *PaymentConfig, orderAmount, limitAmount, feeRate float64, payAmountStr string, payAmount float64, sel *payment.InstanceSelection) (*CreateOrderResponse, error) {
+	if s.tronConfig == nil || s.onchainOrderRepo == nil || s.tronOrderHealthCheck == nil {
+		return nil, tronOrderUnavailable(fmt.Errorf("TRON order dependencies are not configured"))
+	}
+	if !s.tronConfig.Enabled || !s.tronConfig.OrderCreationEnabled {
+		return nil, tronOrderUnavailable(fmt.Errorf("TRON order creation is disabled"))
+	}
+
+	tronProvider, err := provider.NewTRON(sel.InstanceID, sel.Config, nil)
+	if err != nil {
+		return nil, infraerrors.ServiceUnavailable("PAYMENT_PROVIDER_MISCONFIGURED", "provider_misconfigured").
+			WithMetadata(map[string]string{"provider": payment.TypeUSDTTRC20, "instance_id": sel.InstanceID})
+	}
+	if err := validateTRONProviderDeploymentMatch(tronProvider, *s.tronConfig); err != nil {
+		return nil, infraerrors.ServiceUnavailable("TRON_CONFIG_MISMATCH", "TRON provider and deployment configuration do not match")
+	}
+
+	requestedRaw, err := onchain.ParseDecimal(strconv.FormatFloat(req.Amount, 'f', -1, 64), tronProvider.Decimals())
+	if err != nil {
+		return nil, infraerrors.BadRequest("INVALID_AMOUNT", "amount cannot be represented exactly in USDT raw units")
+	}
+	minRaw, _ := new(big.Int).SetString(onchain.DefaultMinRechargeRaw, 10)
+	maxRaw, _ := new(big.Int).SetString(onchain.DefaultMaxRechargeRaw, 10)
+	if requestedRaw.Cmp(minRaw) < 0 || requestedRaw.Cmp(maxRaw) > 0 {
+		return nil, infraerrors.BadRequest("INVALID_AMOUNT", "amount out of USDT recharge range").
+			WithMetadata(map[string]string{"min": "10", "max": "100000"})
+	}
+	expectedRaw, err := onchain.ParseDecimal(payAmountStr, tronProvider.Decimals())
+	if err != nil || expectedRaw.Sign() <= 0 {
+		return nil, infraerrors.BadRequest("INVALID_AMOUNT", "payment amount cannot be represented exactly in USDT raw units")
+	}
+	expectedAmount, err := onchain.FormatRaw(expectedRaw, tronProvider.Decimals())
+	if err != nil {
+		return nil, infraerrors.BadRequest("INVALID_AMOUNT", "invalid USDT payment amount")
+	}
+	if _, err := s.tronOrderHealthCheck(ctx); err != nil {
+		return nil, tronOrderUnavailable(err)
+	}
+
+	definition, _ := onchain.NetworkDefinition(tronProvider.Network())
+	var allocation TRONAddressAllocation
+	order, err := s.createOrderInTxWithStep(
+		ctx, req, user, nil, cfg, orderAmount, limitAmount, feeRate, payAmount, sel,
+		func(txCtx context.Context, tx *dbent.Tx, order *dbent.PaymentOrder) (*dbent.PaymentOrder, error) {
+			allocation, err = s.onchainOrderRepo.AllocateTRONAddressForOrder(txCtx, tronProvider.Network(), s.tronConfig.XPub)
+			if err != nil {
+				return nil, fmt.Errorf("allocate TRON payment address: %w", err)
+			}
+			snapshot := buildTRONOrderSnapshot(sel, tronProvider, definition, allocation, expectedRaw.String())
+			updatedOrder, err := tx.PaymentOrder.UpdateOneID(order.ID).SetProviderSnapshot(snapshot).Save(txCtx)
+			if err != nil {
+				return nil, fmt.Errorf("write TRON order snapshot: %w", err)
+			}
+			if err := s.onchainOrderRepo.CreateOnchainPaymentIntent(txCtx, OnchainPaymentIntentCreate{
+				PaymentOrderID: order.ID, UserID: req.UserID, Network: string(tronProvider.Network()),
+				ChainID: int64(definition.ChainID), TokenContract: tronProvider.TokenContract(),
+				DepositAddress: allocation.Address, DerivationIndex: int64(allocation.Index),
+				ExpectedAmountRaw: expectedRaw.String(), ConfigSnapshot: snapshot,
+				ConfigVersion: tronProvider.ConfigVersion(),
+			}); err != nil {
+				return nil, fmt.Errorf("create TRON payment intent: %w", err)
+			}
+			return updatedOrder, nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	onchainPayment := &payment.OnchainPaymentInfo{
+		Network: string(tronProvider.Network()), ChainID: definition.ChainID, Token: "USDT",
+		TokenContract: tronProvider.TokenContract(), Address: allocation.Address,
+		Amount: expectedAmount, QRCode: allocation.Address, ReceivedAmount: "0",
+		PendingAmount: expectedAmount, ExpiresAt: order.ExpiresAt,
+	}
+	s.writeAuditLog(ctx, order.ID, "ORDER_CREATED", fmt.Sprintf("user:%d", req.UserID), map[string]any{
+		"paymentAmount": req.Amount, "creditedAmount": order.Amount, "payAmount": order.PayAmount,
+		"paymentType": req.PaymentType, "orderType": req.OrderType,
+		"paymentSource": NormalizePaymentSource(req.PaymentSource), "network": tronProvider.Network(),
+		"depositAddress": allocation.Address, "derivationIndex": allocation.Index,
+	})
+	return buildCreateOrderResponse(order, req, payAmount, sel, &payment.CreatePaymentResponse{
+		QRCode: allocation.Address, ResultType: payment.CreatePaymentResultOrderCreated, OnchainPayment: onchainPayment,
+	}, payment.CreatePaymentResultOrderCreated), nil
+}
+
+func (s *PaymentService) createEthereumOrder(ctx context.Context, req CreateOrderRequest, user *User, cfg *PaymentConfig, orderAmount, limitAmount, feeRate float64, payAmountStr string, payAmount float64, sel *payment.InstanceSelection) (*CreateOrderResponse, error) {
+	if s.ethereumConfig == nil || s.ethereumOrderRepo == nil || s.ethereumOrderHealthCheck == nil {
+		return nil, ethereumOrderUnavailable(fmt.Errorf("Ethereum order dependencies are not configured"))
+	}
+	if !s.ethereumConfig.Enabled || !s.ethereumConfig.OrderCreationEnabled {
+		return nil, ethereumOrderUnavailable(fmt.Errorf("Ethereum order creation is disabled"))
+	}
+
+	erc20Provider, err := provider.NewERC20(sel.InstanceID, sel.Config, nil)
+	if err != nil {
+		return nil, infraerrors.ServiceUnavailable("PAYMENT_PROVIDER_MISCONFIGURED", "provider_misconfigured").
+			WithMetadata(map[string]string{"provider": payment.TypeUSDTERC20, "instance_id": sel.InstanceID})
+	}
+	if err := validateEthereumProviderDeploymentMatch(erc20Provider, *s.ethereumConfig); err != nil {
+		return nil, infraerrors.ServiceUnavailable("ETHEREUM_CONFIG_MISMATCH", "Ethereum provider and deployment configuration do not match")
+	}
+
+	requestedRaw, err := onchain.ParseDecimal(strconv.FormatFloat(req.Amount, 'f', -1, 64), erc20Provider.Decimals())
+	if err != nil {
+		return nil, infraerrors.BadRequest("INVALID_AMOUNT", "amount cannot be represented exactly in USDT raw units")
+	}
+	minRaw, _ := new(big.Int).SetString(onchain.DefaultMinRechargeRaw, 10)
+	maxRaw, _ := new(big.Int).SetString(onchain.DefaultMaxRechargeRaw, 10)
+	if requestedRaw.Cmp(minRaw) < 0 || requestedRaw.Cmp(maxRaw) > 0 {
+		return nil, infraerrors.BadRequest("INVALID_AMOUNT", "amount out of USDT recharge range").
+			WithMetadata(map[string]string{"min": "10", "max": "100000"})
+	}
+	expectedRaw, err := onchain.ParseDecimal(payAmountStr, erc20Provider.Decimals())
+	if err != nil || expectedRaw.Sign() <= 0 {
+		return nil, infraerrors.BadRequest("INVALID_AMOUNT", "payment amount cannot be represented exactly in USDT raw units")
+	}
+	expectedAmount, err := onchain.FormatRaw(expectedRaw, erc20Provider.Decimals())
+	if err != nil {
+		return nil, infraerrors.BadRequest("INVALID_AMOUNT", "invalid USDT payment amount")
+	}
+	if _, err := s.ethereumOrderHealthCheck(ctx); err != nil {
+		return nil, ethereumOrderUnavailable(err)
+	}
+
+	definition, _ := onchain.NetworkDefinition(erc20Provider.Network())
+	var allocation EthereumAddressAllocation
+	order, err := s.createOrderInTxWithStep(
+		ctx, req, user, nil, cfg, orderAmount, limitAmount, feeRate, payAmount, sel,
+		func(txCtx context.Context, tx *dbent.Tx, order *dbent.PaymentOrder) (*dbent.PaymentOrder, error) {
+			allocation, err = s.ethereumOrderRepo.AllocateEthereumAddressForOrder(txCtx, erc20Provider.Network(), s.ethereumConfig.XPub)
+			if err != nil {
+				return nil, fmt.Errorf("allocate Ethereum payment address: %w", err)
+			}
+			snapshot := buildEthereumOrderSnapshot(sel, erc20Provider, allocation, expectedRaw.String())
+			updatedOrder, err := tx.PaymentOrder.UpdateOneID(order.ID).SetProviderSnapshot(snapshot).Save(txCtx)
+			if err != nil {
+				return nil, fmt.Errorf("write Ethereum order snapshot: %w", err)
+			}
+			if err := s.ethereumOrderRepo.CreateOnchainPaymentIntent(txCtx, OnchainPaymentIntentCreate{
+				PaymentOrderID: order.ID, UserID: req.UserID, Network: string(erc20Provider.Network()),
+				ChainID: int64(erc20Provider.ChainID()), TokenContract: erc20Provider.TokenContract(),
+				DepositAddress: allocation.Address, DerivationIndex: int64(allocation.Index),
+				ExpectedAmountRaw: expectedRaw.String(), ConfigSnapshot: snapshot,
+				ConfigVersion: erc20Provider.ConfigVersion(),
+			}); err != nil {
+				return nil, fmt.Errorf("create Ethereum payment intent: %w", err)
+			}
+			return updatedOrder, nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	onchainPayment := &payment.OnchainPaymentInfo{
+		Network: string(erc20Provider.Network()), ChainID: definition.ChainID, Token: "USDT",
+		TokenContract: erc20Provider.TokenContract(), Address: allocation.Address,
+		Amount: expectedAmount, QRCode: allocation.Address, ReceivedAmount: "0",
+		PendingAmount: expectedAmount, ExpiresAt: order.ExpiresAt,
+	}
+	s.writeAuditLog(ctx, order.ID, "ORDER_CREATED", fmt.Sprintf("user:%d", req.UserID), map[string]any{
+		"paymentAmount": req.Amount, "creditedAmount": order.Amount, "payAmount": order.PayAmount,
+		"paymentType": req.PaymentType, "orderType": req.OrderType,
+		"paymentSource": NormalizePaymentSource(req.PaymentSource), "network": erc20Provider.Network(),
+		"depositAddress": allocation.Address, "derivationIndex": allocation.Index,
+	})
+	return buildCreateOrderResponse(order, req, payAmount, sel, &payment.CreatePaymentResponse{
+		QRCode: allocation.Address, ResultType: payment.CreatePaymentResultOrderCreated, OnchainPayment: onchainPayment,
+	}, payment.CreatePaymentResultOrderCreated), nil
+}
+
+func validateEthereumProviderDeploymentMatch(erc20Provider *provider.ERC20, deployment config.SelfHostedEthereumConfig) error {
+	if erc20Provider == nil {
+		return fmt.Errorf("Ethereum provider is required")
+	}
+	if erc20Provider.Network() != onchain.Network(strings.TrimSpace(deployment.Network)) ||
+		erc20Provider.ChainID() != deployment.ChainID ||
+		!strings.EqualFold(erc20Provider.TokenContract(), strings.TrimSpace(deployment.USDTContract)) ||
+		erc20Provider.Decimals() != deployment.USDTDecimals ||
+		erc20Provider.ConfigVersion() != strings.TrimSpace(deployment.ConfigVersion) {
+		return fmt.Errorf("provider identity does not match deployment")
+	}
+	return nil
+}
+
+func buildEthereumOrderSnapshot(sel *payment.InstanceSelection, erc20Provider *provider.ERC20, allocation EthereumAddressAllocation, expectedAmountRaw string) map[string]any {
+	snapshot := buildPaymentOrderProviderSnapshot(sel, CreateOrderRequest{})
+	if snapshot == nil {
+		snapshot = map[string]any{}
+	}
+	snapshot["schema_version"] = 3
+	snapshot["network"] = string(erc20Provider.Network())
+	snapshot["chain_id"] = erc20Provider.ChainID()
+	snapshot["token"] = "USDT"
+	snapshot["token_contract"] = erc20Provider.TokenContract()
+	snapshot["token_decimals"] = erc20Provider.Decimals()
+	snapshot["deposit_address"] = allocation.Address
+	snapshot["derivation_index"] = allocation.Index
+	snapshot["expected_amount_raw"] = expectedAmountRaw
+	snapshot["config_version"] = erc20Provider.ConfigVersion()
+	return snapshot
+}
+
+func ethereumOrderUnavailable(err error) error {
+	appErr := infraerrors.ServiceUnavailable(onchain.EthereumRechargeUnavailable, "Ethereum recharge is temporarily unavailable")
+	if err == nil {
+		return appErr
+	}
+	return appErr.WithCause(err)
+}
+
+func validateTRONProviderDeploymentMatch(tronProvider *provider.TRON, deployment config.SelfHostedTRONConfig) error {
+	if tronProvider == nil {
+		return fmt.Errorf("TRON provider is required")
+	}
+	if tronProvider.Network() != onchain.Network(strings.TrimSpace(deployment.Network)) ||
+		tronProvider.TokenContract() != strings.TrimSpace(deployment.USDTContract) ||
+		tronProvider.Decimals() != deployment.USDTDecimals ||
+		tronProvider.ConfigVersion() != strings.TrimSpace(deployment.ConfigVersion) {
+		return fmt.Errorf("provider identity does not match deployment")
+	}
+	return nil
+}
+
+func buildTRONOrderSnapshot(sel *payment.InstanceSelection, tronProvider *provider.TRON, definition onchain.Definition, allocation TRONAddressAllocation, expectedAmountRaw string) map[string]any {
+	snapshot := buildPaymentOrderProviderSnapshot(sel, CreateOrderRequest{})
+	if snapshot == nil {
+		snapshot = map[string]any{}
+	}
+	snapshot["schema_version"] = 3
+	snapshot["network"] = string(tronProvider.Network())
+	snapshot["chain_id"] = definition.ChainID
+	snapshot["token"] = "USDT"
+	snapshot["token_contract"] = tronProvider.TokenContract()
+	snapshot["token_decimals"] = tronProvider.Decimals()
+	snapshot["deposit_address"] = allocation.Address
+	snapshot["derivation_index"] = allocation.Index
+	snapshot["expected_amount_raw"] = expectedAmountRaw
+	snapshot["config_version"] = tronProvider.ConfigVersion()
+	return snapshot
+}
+
+func tronOrderUnavailable(err error) error {
+	appErr := infraerrors.ServiceUnavailable(onchain.TRONRechargeUnavailable, "TRON recharge is temporarily unavailable")
+	if err == nil {
+		return appErr
+	}
+	return appErr.WithCause(err)
 }
 
 func (s *PaymentService) allocateOutTradeNo(ctx context.Context, tx *dbent.Tx) (string, error) {
@@ -243,7 +520,10 @@ func (s *PaymentService) checkPendingLimit(ctx context.Context, tx *dbent.Tx, us
 	if max <= 0 {
 		max = defaultMaxPendingOrders
 	}
-	c, err := tx.PaymentOrder.Query().Where(paymentorder.UserIDEQ(userID), paymentorder.StatusEQ(OrderStatusPending)).Count(ctx)
+	c, err := tx.PaymentOrder.Query().Where(
+		paymentorder.UserIDEQ(userID),
+		paymentorder.StatusIn(OrderStatusPending, OrderStatusPartiallyPaid),
+	).Count(ctx)
 	if err != nil {
 		return fmt.Errorf("count pending orders: %w", err)
 	}
@@ -501,6 +781,16 @@ func sanitizeCreatePaymentResponseDetails(pr *payment.CreatePaymentResponse) {
 	pr.TradeNo = removePostgresTextNUL(pr.TradeNo)
 	pr.PayURL = removePostgresTextNUL(pr.PayURL)
 	pr.QRCode = removePostgresTextNUL(pr.QRCode)
+	if pr.OnchainPayment != nil {
+		pr.OnchainPayment.Network = removePostgresTextNUL(pr.OnchainPayment.Network)
+		pr.OnchainPayment.Token = removePostgresTextNUL(pr.OnchainPayment.Token)
+		pr.OnchainPayment.TokenContract = removePostgresTextNUL(pr.OnchainPayment.TokenContract)
+		pr.OnchainPayment.Address = removePostgresTextNUL(pr.OnchainPayment.Address)
+		pr.OnchainPayment.Amount = removePostgresTextNUL(pr.OnchainPayment.Amount)
+		pr.OnchainPayment.QRCode = removePostgresTextNUL(pr.OnchainPayment.QRCode)
+		pr.OnchainPayment.ReceivedAmount = removePostgresTextNUL(pr.OnchainPayment.ReceivedAmount)
+		pr.OnchainPayment.PendingAmount = removePostgresTextNUL(pr.OnchainPayment.PendingAmount)
+	}
 }
 
 func removePostgresTextNUL(value string) string {
@@ -731,26 +1021,27 @@ func classifyCreatePaymentError(req CreateOrderRequest, providerKey string, err 
 
 func buildCreateOrderResponse(order *dbent.PaymentOrder, req CreateOrderRequest, payAmount float64, sel *payment.InstanceSelection, pr *payment.CreatePaymentResponse, resultType payment.CreatePaymentResultType) *CreateOrderResponse {
 	return &CreateOrderResponse{
-		OrderID:      order.ID,
-		Amount:       order.Amount,
-		PayAmount:    payAmount,
-		FeeRate:      order.FeeRate,
-		Status:       OrderStatusPending,
-		ResultType:   resultType,
-		PaymentType:  req.PaymentType,
-		OutTradeNo:   order.OutTradeNo,
-		PayURL:       pr.PayURL,
-		QRCode:       pr.QRCode,
-		ClientSecret: pr.ClientSecret,
-		IntentID:     pr.IntentID,
-		Currency:     pr.Currency,
-		CountryCode:  pr.CountryCode,
-		PaymentEnv:   pr.PaymentEnv,
-		OAuth:        pr.OAuth,
-		JSAPI:        pr.JSAPI,
-		JSAPIPayload: pr.JSAPI,
-		ExpiresAt:    order.ExpiresAt,
-		PaymentMode:  sel.PaymentMode,
+		OrderID:        order.ID,
+		Amount:         order.Amount,
+		PayAmount:      payAmount,
+		FeeRate:        order.FeeRate,
+		Status:         OrderStatusPending,
+		ResultType:     resultType,
+		PaymentType:    req.PaymentType,
+		OutTradeNo:     order.OutTradeNo,
+		PayURL:         pr.PayURL,
+		QRCode:         pr.QRCode,
+		ClientSecret:   pr.ClientSecret,
+		IntentID:       pr.IntentID,
+		Currency:       pr.Currency,
+		CountryCode:    pr.CountryCode,
+		PaymentEnv:     pr.PaymentEnv,
+		OAuth:          pr.OAuth,
+		JSAPI:          pr.JSAPI,
+		JSAPIPayload:   pr.JSAPI,
+		OnchainPayment: pr.OnchainPayment,
+		ExpiresAt:      order.ExpiresAt,
+		PaymentMode:    sel.PaymentMode,
 	}
 }
 
@@ -822,7 +1113,10 @@ func normalizePaymentRedirectPath(path string) string {
 // --- Order Queries ---
 
 func (s *PaymentService) GetOrder(ctx context.Context, orderID, userID int64) (*dbent.PaymentOrder, error) {
-	o, err := s.entClient.PaymentOrder.Get(ctx, orderID)
+	o, err := s.entClient.PaymentOrder.Query().
+		Where(paymentorder.ID(orderID)).
+		WithOnchainPaymentIntent().
+		Only(ctx)
 	if err != nil {
 		return nil, infraerrors.NotFound("NOT_FOUND", "order not found")
 	}

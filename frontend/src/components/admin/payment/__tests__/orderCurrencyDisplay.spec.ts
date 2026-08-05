@@ -99,6 +99,31 @@ describe('admin order currency display', () => {
     expect(text).toContain('$200.00')
   })
 
+  it('marks on-chain refunds as manual review only and never requests immediate balance deduction', async () => {
+    const wrapper = mount(AdminRefundDialog, {
+      props: {
+        show: false,
+        order: orderFactory({ payment_type: 'usdt_trc20', status: 'COMPLETED' }),
+      },
+      global: {
+        stubs: {
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+        },
+      },
+    })
+
+    await wrapper.setProps({ show: true })
+    expect(wrapper.text()).toContain('payment.admin.onchainRefundManualOnly')
+    expect(wrapper.find('#deduct-balance').exists()).toBe(false)
+
+    await wrapper.get('textarea').setValue('manual chain refund')
+    await wrapper.get('form').trigger('submit')
+    expect(wrapper.emitted('confirm')).toEqual([[
+      expect.objectContaining({ amount: 100, reason: 'manual chain refund', deduct_balance: false }),
+    ]])
+  })
+
   it('renders payment currency consistently in the shared order table', () => {
     const wrapper = mount(OrderTable, {
       props: {

@@ -119,6 +119,68 @@ func TestPrepareRefundRejectsLegacyGuessedProviderInstance(t *testing.T) {
 	require.Equal(t, "REFUND_DISABLED", infraerrors.Reason(err))
 }
 
+func TestPrepareRefundCreatesManualReviewForOnchainUSDTWithoutProviderCall(t *testing.T) {
+	for _, paymentType := range []string{payment.TypeUSDTTRC20, payment.TypeUSDTERC20} {
+		t.Run(paymentType, func(t *testing.T) {
+			ctx := context.Background()
+			client := newPaymentConfigServiceTestClient(t)
+			user, err := client.User.Create().
+				SetEmail("refund-" + paymentType + "@example.com").
+				SetPasswordHash("hash").
+				SetUsername("refund-" + paymentType).
+				Save(ctx)
+			require.NoError(t, err)
+
+			order, err := client.PaymentOrder.Create().
+				SetUserID(user.ID).
+				SetUserEmail(user.Email).
+				SetUserName(user.Username).
+				SetAmount(25).
+				SetPayAmount(25).
+				SetFeeRate(0).
+				SetRechargeCode("REFUND-" + paymentType).
+				SetOutTradeNo("sub2_refund_" + paymentType).
+				SetPaymentType(paymentType).
+				SetPaymentTradeNo("onchain-trade-must-not-be-refunded").
+				SetOrderType(payment.OrderTypeBalance).
+				SetStatus(OrderStatusCompleted).
+				SetExpiresAt(time.Now().Add(time.Hour)).
+				SetPaidAt(time.Now()).
+				SetClientIP("127.0.0.1").
+				SetSrcHost("api.example.com").
+				Save(ctx)
+			require.NoError(t, err)
+
+			svc := &PaymentService{entClient: client}
+			plan, result, err := svc.PrepareRefund(ctx, order.ID, 20, "manual chain refund", true, true)
+			require.NoError(t, err)
+			require.Nil(t, plan)
+			require.NotNil(t, result)
+			require.False(t, result.Success)
+			require.True(t, result.ManualReviewRequired)
+			require.Equal(t, "manual_onchain", result.RefundMode)
+			require.Contains(t, result.Warning, "no transaction was signed or broadcast")
+
+			stored, err := client.PaymentOrder.Get(ctx, order.ID)
+			require.NoError(t, err)
+			require.Equal(t, OrderStatusRefundRequested, stored.Status)
+			require.Equal(t, 20.0, stored.RefundAmount)
+			require.NotNil(t, stored.RefundRequestedAt)
+			require.Equal(t, "admin", *stored.RefundRequestedBy)
+			require.False(t, stored.ForceRefund)
+			require.Nil(t, stored.RefundAt)
+
+			logs, err := client.PaymentAuditLog.Query().
+				Where(paymentauditlog.ActionEQ("ONCHAIN_REFUND_REVIEW_REQUESTED")).
+				All(ctx)
+			require.NoError(t, err)
+			require.Len(t, logs, 1)
+			require.Contains(t, logs[0].Detail, `"automaticTransfer":false`)
+			require.Contains(t, logs[0].Detail, `"broadcast":false`)
+		})
+	}
+}
+
 func TestGwRefundRejectsAlipayMerchantIdentitySnapshotMismatch(t *testing.T) {
 	ctx := context.Background()
 	client := newPaymentConfigServiceTestClient(t)

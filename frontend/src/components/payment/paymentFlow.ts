@@ -2,6 +2,7 @@ import type {
   CreateOrderRequest,
   CreateOrderResult,
   MethodLimit,
+  OnchainPaymentInfo,
   OrderType,
   WechatJSAPIPayload,
   WechatOAuthInfo,
@@ -16,9 +17,11 @@ const VISIBLE_METHOD_ALIASES = {
   wxpay_direct: 'wxpay',
   stripe: 'stripe',
   airwallex: 'airwallex',
+  usdt_trc20: 'usdt_trc20',
+  usdt_erc20: 'usdt_erc20',
 } as const
 
-export type VisiblePaymentMethod = 'alipay' | 'wxpay' | 'stripe' | 'airwallex'
+export type VisiblePaymentMethod = 'alipay' | 'wxpay' | 'stripe' | 'airwallex' | 'usdt_trc20' | 'usdt_erc20'
 export type StripeVisibleMethod = 'alipay' | 'wechat_pay'
 export type PaymentLaunchKind =
   | 'qr_waiting'
@@ -29,6 +32,7 @@ export type PaymentLaunchKind =
   | 'airwallex_route'
   | 'wechat_oauth'
   | 'wechat_jsapi'
+  | 'onchain_waiting'
   | 'unhandled'
 
 export interface PaymentRecoverySnapshot {
@@ -49,6 +53,7 @@ export interface PaymentRecoverySnapshot {
   paymentMode: string
   resumeToken: string
   alipayMobilePrecreateDeepLink?: boolean
+  onchainPayment?: OnchainPaymentInfo
   createdAt: number
 }
 
@@ -101,6 +106,23 @@ export function normalizeVisibleMethod(method: string): VisiblePaymentMethod | '
   return normalized ?? ''
 }
 
+export function isOnchainPaymentMethod(method: string): boolean {
+  const normalized = normalizeVisibleMethod(method) || method.trim()
+  return normalized === 'usdt_trc20' || normalized === 'usdt_erc20'
+}
+
+export function onchainPaymentMatchesMethod(method: string, payment: OnchainPaymentInfo): boolean {
+  const normalizedMethod = normalizeVisibleMethod(method) || method.trim()
+  const network = payment.network.trim().toLowerCase()
+  if (normalizedMethod === 'usdt_trc20') return network.startsWith('tron-')
+  if (normalizedMethod === 'usdt_erc20') return network.startsWith('ethereum-')
+  return false
+}
+
+export function isPaymentMethodAllowedForOrderType(method: string, orderType: OrderType): boolean {
+  return orderType !== 'subscription' || !isOnchainPaymentMethod(method)
+}
+
 export function getVisibleMethods(methods: Record<string, MethodLimit>): Record<string, MethodLimit> {
   const visible: Record<string, MethodLimit> = {}
 
@@ -120,6 +142,9 @@ export function getVisibleMethods(methods: Record<string, MethodLimit>): Record<
 
 export function buildCreateOrderPayload(input: BuildCreateOrderPayloadInput): CreateOrderRequest {
   const visibleMethod = normalizeVisibleMethod(input.paymentType) || input.paymentType.trim()
+  if (!isPaymentMethodAllowedForOrderType(visibleMethod, input.orderType)) {
+    throw new Error('ONCHAIN_BALANCE_RECHARGE_ONLY')
+  }
   const normalizedOrigin = (input.origin || '').trim().replace(/\/+$/, '')
   // When forceQRCode is enabled for alipay, always tell the backend this is not a mobile
   // request so it generates a QR code instead of a mobile-redirect URL.
@@ -169,7 +194,21 @@ export function decidePaymentLaunch(
     paymentMode: (result.payment_mode || '').trim(),
     resumeToken: result.resume_token || '',
     alipayMobilePrecreateDeepLink: result.alipay_mobile_precreate_deep_link === true,
+    onchainPayment: result.onchain_payment,
   }, context.now)
+
+  if (isOnchainPaymentMethod(visibleMethod)) {
+    if (!result.onchain_payment || !onchainPaymentMatchesMethod(visibleMethod, result.onchain_payment)) {
+      return { kind: 'unhandled', paymentState: baseState, recovery: baseState }
+    }
+    const paymentState = {
+      ...baseState,
+      qrCode: result.onchain_payment.address,
+      expiresAt: result.onchain_payment.expires_at || baseState.expiresAt,
+      payUrl: '',
+    }
+    return { kind: 'onchain_waiting', paymentState, recovery: paymentState }
+  }
 
   if (visibleMethod === 'airwallex' && baseState.clientSecret && baseState.intentId) {
     if (!context.airwallexRouteUrl) {
@@ -296,14 +335,29 @@ export function readPaymentRecoverySnapshot(
       || typeof parsed.paymentMode !== 'string'
       || typeof parsed.resumeToken !== 'string'
       || (parsed.alipayMobilePrecreateDeepLink != null && typeof parsed.alipayMobilePrecreateDeepLink !== 'boolean')
+      || (parsed.onchainPayment != null && !isValidOnchainPayment(parsed.onchainPayment))
       || typeof parsed.createdAt !== 'number'
     ) {
       return null
     }
 
+
+    const normalizedPaymentType = normalizeVisibleMethod(parsed.paymentType) || parsed.paymentType.trim()
+    if (isOnchainPaymentMethod(normalizedPaymentType)) {
+      if (
+        !parsed.onchainPayment
+        || !onchainPaymentMatchesMethod(normalizedPaymentType, parsed.onchainPayment)
+        || parsed.qrCode !== parsed.onchainPayment.address
+      ) {
+        return null
+      }
+    } else if (parsed.onchainPayment) {
+      return null
+    }
+
     const now = options.now ?? Date.now()
     const expiresAt = Date.parse(parsed.expiresAt)
-    if (Number.isFinite(expiresAt) && expiresAt <= now) {
+    if (Number.isFinite(expiresAt) && expiresAt <= now && !parsed.onchainPayment) {
       return null
     }
     if (options.resumeToken && parsed.resumeToken !== options.resumeToken) {
@@ -328,9 +382,26 @@ export function readPaymentRecoverySnapshot(
       paymentMode: parsed.paymentMode,
       resumeToken: parsed.resumeToken,
       alipayMobilePrecreateDeepLink: parsed.alipayMobilePrecreateDeepLink === true,
+      onchainPayment: parsed.onchainPayment,
       createdAt: parsed.createdAt,
     }
   } catch {
     return null
   }
+}
+
+function isValidOnchainPayment(value: unknown): value is OnchainPaymentInfo {
+  if (!value || typeof value !== 'object') return false
+  const payment = value as Partial<OnchainPaymentInfo>
+  return typeof payment.network === 'string'
+    && typeof payment.chain_id === 'number'
+    && typeof payment.token === 'string'
+    && typeof payment.token_contract === 'string'
+    && typeof payment.address === 'string'
+    && typeof payment.amount === 'string'
+    && typeof payment.qr_code === 'string'
+    && typeof payment.received_amount === 'string'
+    && typeof payment.pending_amount === 'string'
+    && typeof payment.expires_at === 'string'
+    && (payment.status == null || typeof payment.status === 'string')
 }

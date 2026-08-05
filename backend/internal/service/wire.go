@@ -3,13 +3,17 @@ package service
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"math/big"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/onchain"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	signerv1 "github.com/Wei-Shaw/sub2api/internal/signerapi/v1"
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -782,6 +786,10 @@ var ProviderSet = wire.NewSet(
 	NewAffiliateService,
 	ProvidePaymentConfigService,
 	ProvidePaymentService,
+	ProvideOnchainScannerRuntime,
+	ProvideOnchainSettlementRuntime,
+	ProvideOnchainReconciliationRuntime,
+	ProvideOnchainSweepRuntime,
 	ProvidePaymentOrderExpiryService,
 	ProvideBalanceNotifyService,
 	ProvideChannelMonitorService,
@@ -811,10 +819,173 @@ func ProvideBalanceNotifyService(emailService *EmailService, settingRepo Setting
 }
 
 // ProvidePaymentService creates PaymentService and attaches notification email delivery.
-func ProvidePaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService, notificationEmailService *NotificationEmailService) *PaymentService {
+func ProvidePaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService, notificationEmailService *NotificationEmailService, onchainOrderRepo OnchainOrderRepository, cfg *config.Config) *PaymentService {
 	svc := NewPaymentService(entClient, registry, loadBalancer, redeemService, subscriptionSvc, configService, userRepo, groupRepo, affiliateService)
 	svc.SetNotificationEmailService(notificationEmailService)
+	svc.SetTRONOrderDependencies(onchainOrderRepo, cfg.Onchain.TRON, newDeploymentTRONOrderHealthCheck(cfg.Onchain.TRON))
+	if ethereumOrderRepo, ok := onchainOrderRepo.(EthereumOnchainOrderRepository); ok {
+		cursorReader, _ := onchainOrderRepo.(interface {
+			LoadEthereumScanCursor(context.Context, onchain.Network) (onchain.EthereumScanCursor, error)
+		})
+		svc.SetEthereumOrderDependencies(ethereumOrderRepo, cfg.Onchain.Ethereum, newDeploymentEthereumOrderHealthCheck(cfg.Onchain.Ethereum, cursorReader))
+	}
+	svc.SetTRONHotWalletCheck(newDeploymentTRONHotWalletCheck(cfg.Onchain.TRON))
+	svc.SetTRONObservabilityChecks(
+		newDeploymentTRONResourceCheck(cfg.Onchain.TRON),
+		newDeploymentTRONSignerHealthCheck(cfg.Onchain.TRON),
+	)
+	svc.SetEthereumObservabilityCheck(newDeploymentEthereumBalanceCheck(cfg.Onchain.Ethereum))
 	return svc
+}
+
+func newDeploymentEthereumOrderHealthCheck(cfg config.SelfHostedEthereumConfig, cursorReader interface {
+	LoadEthereumScanCursor(context.Context, onchain.Network) (onchain.EthereumScanCursor, error)
+}) EthereumOrderHealthCheck {
+	if !cfg.Enabled {
+		return func(context.Context) (onchain.EthereumStartupReport, error) {
+			return onchain.EthereumStartupReport{}, fmt.Errorf("Ethereum network is disabled")
+		}
+	}
+	clientOptions := func(endpoint string) onchain.EthereumRPCClientOptions {
+		return onchain.EthereumRPCClientOptions{
+			Endpoint: endpoint, Timeout: time.Duration(cfg.RequestTimeoutSeconds) * time.Second,
+			ResponseMaxBytes: cfg.ResponseMaxBytes, BatchLimit: cfg.RPCBatchLimit,
+			MaxRetries: 2, RetryBackoff: 100 * time.Millisecond,
+		}
+	}
+	primary, primaryErr := onchain.NewEthereumRPCClient(context.Background(), clientOptions(cfg.PrimaryRPCURL))
+	backup, backupErr := onchain.NewEthereumRPCClient(context.Background(), clientOptions(cfg.BackupRPCURL))
+	gate := onchain.NewEthereumHealthGate()
+	return func(ctx context.Context) (onchain.EthereumStartupReport, error) {
+		if cfg.ScannerEnabled {
+			if cursorReader == nil {
+				return onchain.EthereumStartupReport{}, fmt.Errorf("Ethereum scan cursor health reader is unavailable")
+			}
+			cursor, err := cursorReader.LoadEthereumScanCursor(ctx, onchain.Network(cfg.Network))
+			if err != nil {
+				return onchain.EthereumStartupReport{}, fmt.Errorf("load Ethereum scan cursor health: %w", err)
+			}
+			if cursor.Health == onchain.CursorHashConflict {
+				return onchain.EthereumStartupReport{}, onchain.ErrEthereumScanHashConflict
+			}
+		}
+		if primaryErr != nil {
+			return onchain.EthereumStartupReport{}, primaryErr
+		}
+		if backupErr != nil {
+			return onchain.EthereumStartupReport{}, backupErr
+		}
+		return gate.Refresh(ctx, primary, backup, onchain.EthereumStartupOptions{
+			Network: onchain.Network(cfg.Network), ChainID: cfg.ChainID,
+			USDTContract: cfg.USDTContract, USDTDecimals: cfg.USDTDecimals,
+			MaxFinalizedLag: cfg.MaxFinalizedLag,
+		})
+	}
+}
+
+func newDeploymentEthereumBalanceCheck(cfg config.SelfHostedEthereumConfig) EthereumBalanceCheck {
+	if !cfg.Enabled {
+		return nil
+	}
+	client, clientErr := onchain.NewEthereumRPCClient(context.Background(), onchain.EthereumRPCClientOptions{
+		Endpoint: cfg.PrimaryRPCURL, Timeout: time.Duration(cfg.RequestTimeoutSeconds) * time.Second,
+		ResponseMaxBytes: cfg.ResponseMaxBytes, BatchLimit: cfg.RPCBatchLimit,
+		MaxRetries: 2, RetryBackoff: 100 * time.Millisecond,
+	})
+	return func(ctx context.Context, address string) (*big.Int, error) {
+		if clientErr != nil {
+			return nil, clientErr
+		}
+		return client.EthereumBalance(ctx, address)
+	}
+}
+
+func newDeploymentTRONOrderHealthCheck(cfg config.SelfHostedTRONConfig) TRONOrderHealthCheck {
+	if !cfg.Enabled || !cfg.OrderCreationEnabled {
+		return func(context.Context) (onchain.TRONHealthReport, error) {
+			return onchain.TRONHealthReport{}, fmt.Errorf("TRON order creation is disabled")
+		}
+	}
+	client, clientErr := onchain.NewJavaTronClient(onchain.JavaTronClientOptions{
+		FullNodeURL: cfg.FullNodeURL, SolidityNodeURL: cfg.SolidityNodeURL,
+		Timeout:          time.Duration(cfg.RequestTimeoutSeconds) * time.Second,
+		ResponseMaxBytes: cfg.ResponseMaxBytes,
+	})
+	gate := onchain.NewTRONHealthGate()
+	return func(ctx context.Context) (onchain.TRONHealthReport, error) {
+		if clientErr != nil {
+			return onchain.TRONHealthReport{}, clientErr
+		}
+		report, err := gate.Refresh(ctx, client, onchain.TRONHealthCheckOptions{
+			Network: onchain.Network(cfg.Network), USDTContract: cfg.USDTContract,
+			ContractCaller: cfg.SweepAddress, ExpectedDecimals: cfg.USDTDecimals,
+			MaxBlockLag: cfg.MaxBlockLag,
+		})
+		if err != nil {
+			return report, err
+		}
+		return report, gate.RequireNewOrder()
+	}
+}
+
+func newDeploymentTRONResourceCheck(cfg config.SelfHostedTRONConfig) TRONResourceCheck {
+	if !cfg.Enabled {
+		return nil
+	}
+	client, clientErr := onchain.NewJavaTronClient(onchain.JavaTronClientOptions{
+		FullNodeURL: cfg.FullNodeURL, SolidityNodeURL: cfg.SolidityNodeURL,
+		Timeout:          time.Duration(cfg.RequestTimeoutSeconds) * time.Second,
+		ResponseMaxBytes: cfg.ResponseMaxBytes,
+	})
+	return func(ctx context.Context) (onchain.TRONAccountState, error) {
+		if clientErr != nil {
+			return onchain.TRONAccountState{}, clientErr
+		}
+		return client.TRONAccountState(ctx, cfg.SweepAddress)
+	}
+}
+
+func newDeploymentTRONSignerHealthCheck(cfg config.SelfHostedTRONConfig) TRONSignerHealthCheck {
+	if !cfg.Enabled {
+		return nil
+	}
+	client, clientErr := signerv1.NewClient(signerv1.ClientConfig{
+		BaseURL: cfg.SignerURL, ClientCertFile: cfg.SignerClientCertFile,
+		ClientKeyFile: cfg.SignerClientKeyFile, ServerCAFile: cfg.SignerServerCAFile,
+		ServerIdentityURI: cfg.SignerServerIdentityURI,
+		Timeout:           time.Duration(cfg.SignerTimeoutSeconds) * time.Second,
+	})
+	return func(ctx context.Context) error {
+		if clientErr != nil {
+			return clientErr
+		}
+		_, err := client.Health(ctx)
+		return err
+	}
+}
+
+func newDeploymentTRONHotWalletCheck(cfg config.SelfHostedTRONConfig) TRONHotWalletCheck {
+	if !cfg.Enabled {
+		return nil
+	}
+	client, clientErr := onchain.NewJavaTronClient(onchain.JavaTronClientOptions{
+		FullNodeURL: cfg.FullNodeURL, SolidityNodeURL: cfg.SolidityNodeURL,
+		Timeout:          time.Duration(cfg.RequestTimeoutSeconds) * time.Second,
+		ResponseMaxBytes: cfg.ResponseMaxBytes,
+	})
+	var monitor *onchain.TRONHotWalletMonitor
+	if clientErr == nil {
+		monitor, clientErr = onchain.NewTRONHotWalletMonitor(
+			client, onchain.Network(cfg.Network), cfg.USDTContract, cfg.SweepAddress,
+			cfg.HotWalletWarningRaw, cfg.HotWalletApprovalRaw,
+		)
+	}
+	return func(ctx context.Context) (onchain.TRONHotWalletStatus, error) {
+		if clientErr != nil {
+			return onchain.TRONHotWalletStatus{}, clientErr
+		}
+		return monitor.Check(ctx)
+	}
 }
 
 // ProvidePaymentOrderExpiryService creates and starts PaymentOrderExpiryService.

@@ -374,12 +374,31 @@ func normalizeOrderLookupOutTradeNo(raw string) (string, error) {
 
 func (s *PaymentService) ExpireTimedOutOrders(ctx context.Context) (int, error) {
 	now := time.Now()
-	orders, err := s.entClient.PaymentOrder.Query().Where(paymentorder.StatusEQ(OrderStatusPending), paymentorder.ExpiresAtLTE(now)).All(ctx)
+	orders, err := s.entClient.PaymentOrder.Query().Where(
+		paymentorder.StatusIn(OrderStatusPending, OrderStatusPartiallyPaid),
+		paymentorder.ExpiresAtLTE(now),
+	).All(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("query expired: %w", err)
 	}
 	n := 0
 	for _, o := range orders {
+		if o.Status == OrderStatusPartiallyPaid && payment.IsOnchainUSDT(o.PaymentType) {
+			updated, updateErr := s.entClient.PaymentOrder.Update().Where(
+				paymentorder.IDEQ(o.ID),
+				paymentorder.StatusEQ(OrderStatusPartiallyPaid),
+			).SetStatus(OrderStatusExpired).Save(ctx)
+			if updateErr != nil {
+				return n, fmt.Errorf("expire partially paid onchain order: %w", updateErr)
+			}
+			if updated == 1 {
+				s.writeAuditLog(ctx, o.ID, "ORDER_EXPIRED", "system", map[string]any{
+					"detail": "partially paid onchain order expired and requires settlement review",
+				})
+				n++
+			}
+			continue
+		}
 		// Check upstream payment status before expiring — the user may have
 		// paid just before timeout and the webhook hasn't arrived yet.
 		outcome, _ := s.cancelCore(ctx, o, OrderStatusExpired, "system", "order expired")

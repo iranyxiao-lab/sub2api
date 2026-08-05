@@ -24,7 +24,11 @@ import (
 
 // --- Refund Flow ---
 
-var createPaymentProviderFromInstance = provider.CreateProvider
+var createPaymentProviderFromInstance = func(providerKey, instanceID string, config map[string]string) (payment.Provider, error) {
+	return provider.CreateProvider(providerKey, instanceID, config)
+}
+
+const onchainManualRefundWarning = "on-chain refund is pending manual review; no transaction was signed or broadcast"
 
 // getOrderProviderInstance looks up the provider instance that processed this order.
 // For legacy orders without provider_instance_id, it resolves only when the
@@ -214,6 +218,27 @@ func (s *PaymentService) PrepareRefund(ctx context.Context, oid int64, amt float
 	if !psSliceContains(ok, o.Status) {
 		return nil, nil, infraerrors.BadRequest("INVALID_STATUS", "order status does not allow refund")
 	}
+	if math.IsNaN(amt) || math.IsInf(amt, 0) {
+		return nil, nil, infraerrors.BadRequest("INVALID_AMOUNT", "invalid refund amount")
+	}
+	if amt <= 0 {
+		amt = o.Amount
+	}
+	orderCurrency := PaymentOrderCurrency(o)
+	if amt-o.Amount > paymentAmountToleranceForCurrency(orderCurrency) {
+		return nil, nil, infraerrors.BadRequest("REFUND_AMOUNT_EXCEEDED", "refund amount exceeds recharge")
+	}
+	rr := strings.TrimSpace(reason)
+	if rr == "" && o.RefundRequestReason != nil {
+		rr = *o.RefundRequestReason
+	}
+	if rr == "" {
+		rr = fmt.Sprintf("refund order:%d", o.ID)
+	}
+	if payment.IsOnchainUSDT(o.PaymentType) {
+		result, err := s.createOnchainManualRefundReview(ctx, o, amt, rr)
+		return nil, result, err
+	}
 	// Check provider instance allows admin refund
 	inst, instErr := s.getRefundOrderProviderInstance(ctx, o)
 	if instErr != nil {
@@ -227,24 +252,7 @@ func (s *PaymentService) PrepareRefund(ctx context.Context, oid int64, amt float
 	if !inst.RefundEnabled {
 		return nil, nil, infraerrors.Forbidden("REFUND_DISABLED", "refund is not enabled for this provider")
 	}
-	if math.IsNaN(amt) || math.IsInf(amt, 0) {
-		return nil, nil, infraerrors.BadRequest("INVALID_AMOUNT", "invalid refund amount")
-	}
-	if amt <= 0 {
-		amt = o.Amount
-	}
-	orderCurrency := PaymentOrderCurrency(o)
-	if amt-o.Amount > paymentAmountToleranceForCurrency(orderCurrency) {
-		return nil, nil, infraerrors.BadRequest("REFUND_AMOUNT_EXCEEDED", "refund amount exceeds recharge")
-	}
 	ga := calculateGatewayRefundAmount(o.Amount, o.PayAmount, amt, orderCurrency)
-	rr := strings.TrimSpace(reason)
-	if rr == "" && o.RefundRequestReason != nil {
-		rr = *o.RefundRequestReason
-	}
-	if rr == "" {
-		rr = fmt.Sprintf("refund order:%d", o.ID)
-	}
 	p := &RefundPlan{OrderID: oid, Order: o, RefundAmount: amt, GatewayAmount: ga, Reason: rr, Force: force, DeductBalance: deduct, DeductionType: payment.DeductionTypeNone}
 	if deduct {
 		if er := s.prepDeduct(ctx, o, p, force); er != nil {
@@ -252,6 +260,38 @@ func (s *PaymentService) PrepareRefund(ctx context.Context, oid int64, amt float
 		}
 	}
 	return p, nil, nil
+}
+
+func (s *PaymentService) createOnchainManualRefundReview(ctx context.Context, order *dbent.PaymentOrder, amount float64, reason string) (*RefundResult, error) {
+	now := time.Now().UTC()
+	updated, err := s.entClient.PaymentOrder.Update().
+		Where(
+			paymentorder.IDEQ(order.ID),
+			paymentorder.StatusIn(OrderStatusCompleted, OrderStatusRefundRequested, OrderStatusRefundPending, OrderStatusRefundFailed),
+		).
+		SetStatus(OrderStatusRefundRequested).
+		SetRefundAmount(amount).
+		SetRefundReason(reason).
+		SetRefundRequestedAt(now).
+		SetRefundRequestReason(reason).
+		SetRefundRequestedBy("admin").
+		ClearRefundAt().
+		SetForceRefund(false).
+		Save(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("create on-chain refund review: %w", err)
+	}
+	if updated != 1 {
+		return nil, infraerrors.Conflict("CONFLICT", "order status changed")
+	}
+	s.writeAuditLog(ctx, order.ID, "ONCHAIN_REFUND_REVIEW_REQUESTED", "admin", map[string]any{
+		"paymentType": order.PaymentType, "suggestedAmount": amount, "reason": reason,
+		"automaticTransfer": false, "signed": false, "broadcast": false,
+	})
+	return &RefundResult{
+		Success: false, Warning: onchainManualRefundWarning,
+		ManualReviewRequired: true, RefundMode: "manual_onchain",
+	}, nil
 }
 
 func (s *PaymentService) prepDeduct(ctx context.Context, o *dbent.PaymentOrder, p *RefundPlan, force bool) *RefundResult {
@@ -281,6 +321,12 @@ func (s *PaymentService) prepDeduct(ctx context.Context, o *dbent.PaymentOrder, 
 }
 
 func (s *PaymentService) ExecuteRefund(ctx context.Context, p *RefundPlan) (*RefundResult, error) {
+	if p == nil || p.Order == nil {
+		return nil, infraerrors.BadRequest("INVALID_REFUND_PLAN", "refund plan is missing")
+	}
+	if payment.IsOnchainUSDT(p.Order.PaymentType) {
+		return s.createOnchainManualRefundReview(ctx, p.Order, p.RefundAmount, p.Reason)
+	}
 	c, err := s.entClient.PaymentOrder.Update().Where(paymentorder.IDEQ(p.OrderID), paymentorder.StatusIn(OrderStatusCompleted, OrderStatusRefundRequested, OrderStatusRefundPending, OrderStatusRefundFailed)).SetStatus(OrderStatusRefunding).Save(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("lock: %w", err)
@@ -405,6 +451,9 @@ func (s *PaymentService) QueryAndFinalizeRefund(ctx context.Context, oid int64) 
 	o, err := s.entClient.PaymentOrder.Get(ctx, oid)
 	if err != nil {
 		return nil, infraerrors.NotFound("NOT_FOUND", "order not found")
+	}
+	if payment.IsOnchainUSDT(o.PaymentType) {
+		return nil, infraerrors.BadRequest("ONCHAIN_REFUND_MANUAL_ONLY", "on-chain refunds require manual review and controlled execution")
 	}
 	if o.Status != OrderStatusRefundPending {
 		return nil, infraerrors.BadRequest("INVALID_STATUS", "only refund pending orders can be finalized")

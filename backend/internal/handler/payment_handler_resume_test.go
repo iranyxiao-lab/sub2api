@@ -57,6 +57,34 @@ func TestApplyWeChatPaymentResumeClaims(t *testing.T) {
 	}
 }
 
+func TestSanitizePaymentOrderIncludesOnchainProgress(t *testing.T) {
+	t.Parallel()
+
+	expiresAt := time.Date(2026, time.July, 31, 12, 30, 0, 0, time.UTC)
+	result := sanitizePaymentOrderForResponse(&dbent.PaymentOrder{
+		ID: 42, UserID: 9, Amount: 88, PayAmount: 88,
+		PaymentType: payment.TypeUSDTTRC20, OrderType: payment.OrderTypeBalance,
+		Status: payment.OrderStatusPartiallyPaid, ExpiresAt: expiresAt,
+		Edges: dbent.PaymentOrderEdges{OnchainPaymentIntent: &dbent.OnchainPaymentIntent{
+			Network: "tron-mainnet", ChainID: 728126428,
+			TokenContract:     "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+			DepositAddress:    "TExampleDepositAddress",
+			ExpectedAmountRaw: "88125001", ReceivedAmountRaw: "10125001",
+			ConfigSnapshot: map[string]any{"token": "USDT", "token_decimals": float64(6)},
+			Status:         "PARTIALLY_PAID",
+		}},
+	})
+
+	require.NotNil(t, result)
+	require.NotNil(t, result.OnchainPayment)
+	require.Equal(t, "88.125001", result.OnchainPayment.Amount)
+	require.Equal(t, "10.125001", result.OnchainPayment.ReceivedAmount)
+	require.Equal(t, "78", result.OnchainPayment.PendingAmount)
+	require.Equal(t, "TExampleDepositAddress", result.OnchainPayment.QRCode)
+	require.Equal(t, "PARTIALLY_PAID", result.OnchainPayment.Status)
+	require.Equal(t, expiresAt, result.OnchainPayment.ExpiresAt)
+}
+
 func TestApplyWeChatPaymentResumeClaimsRejectsPaymentTypeMismatch(t *testing.T) {
 	t.Parallel()
 

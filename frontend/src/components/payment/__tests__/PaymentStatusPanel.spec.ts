@@ -5,6 +5,7 @@ const pollOrderStatus = vi.hoisted(() => vi.fn())
 const cancelOrder = vi.hoisted(() => vi.fn())
 const verifyOrder = vi.hoisted(() => vi.fn())
 const showError = vi.hoisted(() => vi.fn())
+const showSuccess = vi.hoisted(() => vi.fn())
 const toCanvas = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-i18n', async () => {
@@ -26,6 +27,7 @@ vi.mock('@/stores/payment', () => ({
 vi.mock('@/stores', () => ({
   useAppStore: () => ({
     showError,
+    showSuccess,
   }),
 }))
 
@@ -59,6 +61,21 @@ const orderFactory = (status: string) => ({
   refund_amount: 0,
 })
 
+const onchainPaymentFactory = (overrides: Record<string, unknown> = {}) => ({
+  network: 'tron-mainnet',
+  chain_id: 728126428,
+  token: 'USDT',
+  token_contract: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
+  address: 'TExampleDepositAddress',
+  amount: '88',
+  qr_code: 'TExampleDepositAddress',
+  received_amount: '0',
+  pending_amount: '88',
+  expires_at: '2099-01-01T12:30:00Z',
+  status: 'PENDING',
+  ...overrides,
+})
+
 describe('PaymentStatusPanel', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -66,7 +83,238 @@ describe('PaymentStatusPanel', () => {
     cancelOrder.mockReset()
     verifyOrder.mockReset()
     showError.mockReset()
+    showSuccess.mockReset()
     toCanvas.mockReset().mockResolvedValue(undefined)
+  })
+
+  it('renders a TRC20 address-only QR and copies address and amount independently', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+
+    const wrapper = mount(PaymentStatusPanel, {
+      props: {
+        orderId: 42,
+        amount: 88,
+        payAmount: 88,
+        qrCode: 'TExampleDepositAddress',
+        expiresAt: '2099-01-01T12:30:00Z',
+        paymentType: 'usdt_trc20',
+        orderType: 'balance',
+        onchainPayment: {
+          network: 'tron-mainnet',
+          chain_id: 728126428,
+          token: 'USDT',
+          token_contract: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
+          address: 'TExampleDepositAddress',
+          amount: '88.125001',
+          qr_code: 'TExampleDepositAddress',
+          received_amount: '0',
+          pending_amount: '88.125001',
+          expires_at: '2099-01-01T12:30:00Z',
+          status: 'PENDING',
+        },
+      },
+      global: { stubs: { Icon: true } },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="onchain-payment-panel"]').text()).toContain('TRON (TRC20)')
+    expect(wrapper.get('[data-test="onchain-address"]').text()).toBe('TExampleDepositAddress')
+    expect(wrapper.text()).toContain('88.125001 USDT')
+    expect(wrapper.text()).toContain('payment.onchain.trc20RiskWarning')
+    expect(toCanvas).toHaveBeenCalledWith(
+      expect.any(HTMLCanvasElement),
+      'TExampleDepositAddress',
+      expect.any(Object),
+    )
+
+    await wrapper.get('[data-test="copy-onchain-address"]').trigger('click')
+    await wrapper.get('[data-test="copy-onchain-amount"]').trigger('click')
+    await flushPromises()
+
+    expect(writeText).toHaveBeenNthCalledWith(1, 'TExampleDepositAddress')
+    expect(writeText).toHaveBeenNthCalledWith(2, '88.125001')
+    expect(showSuccess).toHaveBeenCalledTimes(2)
+  })
+
+  it('labels ERC20 payments and shows the Ethereum network warning', async () => {
+    const wrapper = mount(PaymentStatusPanel, {
+      props: {
+        orderId: 43,
+        qrCode: '0x1111111111111111111111111111111111111111',
+        expiresAt: '2099-01-01T12:30:00Z',
+        paymentType: 'usdt_erc20',
+        orderType: 'balance',
+        onchainPayment: {
+          network: 'ethereum-mainnet',
+          chain_id: 1,
+          token: 'USDT',
+          token_contract: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+          address: '0x1111111111111111111111111111111111111111',
+          amount: '200',
+          qr_code: '0x1111111111111111111111111111111111111111',
+          received_amount: '0',
+          pending_amount: '200',
+          expires_at: '2099-01-01T12:30:00Z',
+        },
+      },
+      global: { stubs: { Icon: true } },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Ethereum (ERC20)')
+    expect(wrapper.text()).toContain('payment.onchain.erc20RiskWarning')
+  })
+
+  it('refreshes partial on-chain amounts without treating the order as complete', async () => {
+    pollOrderStatus.mockResolvedValue({
+      ...orderFactory('PARTIALLY_PAID'),
+      payment_type: 'usdt_trc20',
+      onchain_payment: onchainPaymentFactory({
+        received_amount: '10.25',
+        pending_amount: '77.75',
+        status: 'PARTIALLY_PAID',
+      }),
+    })
+
+    const wrapper = mount(PaymentStatusPanel, {
+      props: {
+        orderId: 42,
+        qrCode: 'TExampleDepositAddress',
+        expiresAt: '2099-01-01T12:30:00Z',
+        paymentType: 'usdt_trc20',
+        orderType: 'balance',
+        onchainPayment: onchainPaymentFactory(),
+      },
+      global: { stubs: { Icon: true } },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="onchain-status"]').text()).toContain('payment.onchain.status.partial')
+    expect(wrapper.text()).toContain('10.25 USDT')
+    expect(wrapper.text()).toContain('77.75 USDT')
+    expect(wrapper.emitted('success')).toBeUndefined()
+  })
+
+  it('keeps an on-chain RECHARGING order in processing until credit completes', async () => {
+    pollOrderStatus.mockResolvedValue({
+      ...orderFactory('RECHARGING'),
+      payment_type: 'usdt_trc20',
+      onchain_payment: onchainPaymentFactory({
+        received_amount: '88',
+        pending_amount: '0',
+        status: 'CREDIT_PENDING',
+      }),
+    })
+
+    const wrapper = mount(PaymentStatusPanel, {
+      props: {
+        orderId: 42,
+        qrCode: 'TExampleDepositAddress',
+        expiresAt: '2099-01-01T12:30:00Z',
+        paymentType: 'usdt_trc20',
+        orderType: 'balance',
+        onchainPayment: onchainPaymentFactory(),
+      },
+      global: { stubs: { Icon: true } },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="onchain-status"]').text()).toContain('payment.onchain.status.processing')
+    expect(wrapper.text()).not.toContain('payment.result.success')
+    expect(wrapper.emitted('success')).toBeUndefined()
+  })
+
+  it('settles an on-chain order only after the order is completed', async () => {
+    pollOrderStatus.mockResolvedValue({
+      ...orderFactory('COMPLETED'),
+      payment_type: 'usdt_trc20',
+      onchain_payment: onchainPaymentFactory({
+        received_amount: '88',
+        pending_amount: '0',
+        status: 'SETTLED',
+      }),
+    })
+
+    const wrapper = mount(PaymentStatusPanel, {
+      props: {
+        orderId: 42,
+        qrCode: 'TExampleDepositAddress',
+        expiresAt: '2099-01-01T12:30:00Z',
+        paymentType: 'usdt_trc20',
+        orderType: 'balance',
+        onchainPayment: onchainPaymentFactory(),
+      },
+      global: { stubs: { Icon: true } },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('payment.result.success')
+    expect(wrapper.emitted('success')).toHaveLength(1)
+  })
+
+  it('shows review state for expired underpayment and preserves the payment details', async () => {
+    pollOrderStatus.mockResolvedValue({
+      ...orderFactory('REVIEW_REQUIRED'),
+      payment_type: 'usdt_trc20',
+      onchain_payment: onchainPaymentFactory({
+        received_amount: '10',
+        pending_amount: '78',
+        status: 'REVIEW_REQUIRED',
+      }),
+    })
+
+    const wrapper = mount(PaymentStatusPanel, {
+      props: {
+        orderId: 42,
+        qrCode: 'TExampleDepositAddress',
+        expiresAt: '2024-01-01T12:30:00Z',
+        paymentType: 'usdt_trc20',
+        orderType: 'balance',
+        onchainPayment: onchainPaymentFactory({ expires_at: '2024-01-01T12:30:00Z' }),
+      },
+      global: { stubs: { Icon: true } },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="onchain-status"]').text()).toContain('payment.onchain.status.review')
+    expect(wrapper.get('[data-test="onchain-address"]').text()).toBe('TExampleDepositAddress')
+    expect(wrapper.text()).toContain('10 USDT')
+  })
+
+  it('shows temporary unavailability after repeated poll failures and continues retrying', async () => {
+    pollOrderStatus.mockResolvedValue(null)
+
+    const wrapper = mount(PaymentStatusPanel, {
+      props: {
+        orderId: 42,
+        qrCode: 'TExampleDepositAddress',
+        expiresAt: '2099-01-01T12:30:00Z',
+        paymentType: 'usdt_trc20',
+        orderType: 'balance',
+        onchainPayment: onchainPaymentFactory(),
+      },
+      global: { stubs: { Icon: true } },
+    })
+
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(6000)
+    await flushPromises()
+
+    expect(pollOrderStatus).toHaveBeenCalledTimes(3)
+    expect(wrapper.get('[data-test="onchain-status"]').text()).toContain('payment.onchain.status.unavailable')
+
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(pollOrderStatus).toHaveBeenCalledTimes(4)
   })
 
   afterEach(() => {

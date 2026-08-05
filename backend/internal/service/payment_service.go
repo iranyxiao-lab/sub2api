@@ -14,6 +14,8 @@ import (
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/paymentproviderinstance"
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/onchain"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/payment/provider"
 )
@@ -22,6 +24,8 @@ import (
 
 const (
 	OrderStatusPending           = payment.OrderStatusPending
+	OrderStatusPartiallyPaid     = payment.OrderStatusPartiallyPaid
+	OrderStatusReviewRequired    = payment.OrderStatusReviewRequired
 	OrderStatusPaid              = payment.OrderStatusPaid
 	OrderStatusRecharging        = payment.OrderStatusRecharging
 	OrderStatusCompleted         = payment.OrderStatusCompleted
@@ -106,6 +110,7 @@ type CreateOrderResponse struct {
 	OAuth                         *payment.WechatOAuthInfo        `json:"oauth,omitempty"`
 	JSAPI                         *payment.WechatJSAPIPayload     `json:"jsapi,omitempty"`
 	JSAPIPayload                  *payment.WechatJSAPIPayload     `json:"jsapi_payload,omitempty"`
+	OnchainPayment                *payment.OnchainPaymentInfo     `json:"onchain_payment,omitempty"`
 	ExpiresAt                     time.Time                       `json:"expires_at"`
 	PaymentMode                   string                          `json:"payment_mode,omitempty"`
 	ResumeToken                   string                          `json:"resume_token,omitempty"`
@@ -136,11 +141,13 @@ type RefundPlan struct {
 }
 
 type RefundResult struct {
-	Success         bool    `json:"success"`
-	Warning         string  `json:"warning,omitempty"`
-	RequireForce    bool    `json:"require_force,omitempty"`
-	BalanceDeducted float64 `json:"balance_deducted,omitempty"`
-	SubDaysDeducted int     `json:"subscription_days_deducted,omitempty"`
+	Success              bool    `json:"success"`
+	Warning              string  `json:"warning,omitempty"`
+	RequireForce         bool    `json:"require_force,omitempty"`
+	ManualReviewRequired bool    `json:"manual_review_required,omitempty"`
+	RefundMode           string  `json:"refund_mode,omitempty"`
+	BalanceDeducted      float64 `json:"balance_deducted,omitempty"`
+	SubDaysDeducted      int     `json:"subscription_days_deducted,omitempty"`
 }
 
 type DashboardStats struct {
@@ -184,6 +191,44 @@ type TopUsersByCurrency map[string][]TopUserStat
 
 // --- Service ---
 
+type TRONAddressAllocation struct {
+	Network onchain.Network
+	Index   uint32
+	Address string
+}
+
+type EthereumAddressAllocation struct {
+	Network onchain.Network
+	Index   uint32
+	Address string
+}
+
+type OnchainPaymentIntentCreate struct {
+	PaymentOrderID    int64
+	UserID            int64
+	Network           string
+	ChainID           int64
+	TokenContract     string
+	DepositAddress    string
+	DerivationIndex   int64
+	ExpectedAmountRaw string
+	ConfigSnapshot    map[string]any
+	ConfigVersion     string
+}
+
+type OnchainOrderRepository interface {
+	AllocateTRONAddressForOrder(context.Context, onchain.Network, string) (TRONAddressAllocation, error)
+	CreateOnchainPaymentIntent(context.Context, OnchainPaymentIntentCreate) error
+}
+
+type EthereumOnchainOrderRepository interface {
+	AllocateEthereumAddressForOrder(context.Context, onchain.Network, string) (EthereumAddressAllocation, error)
+	CreateOnchainPaymentIntent(context.Context, OnchainPaymentIntentCreate) error
+}
+
+type TRONOrderHealthCheck func(context.Context) (onchain.TRONHealthReport, error)
+type EthereumOrderHealthCheck func(context.Context) (onchain.EthereumStartupReport, error)
+
 type PaymentService struct {
 	providerMu               sync.Mutex
 	providersLoaded          bool
@@ -198,6 +243,17 @@ type PaymentService struct {
 	resumeService            *PaymentResumeService
 	affiliateService         *AffiliateService
 	notificationEmailService *NotificationEmailService
+	onchainOrderRepo         OnchainOrderRepository
+	onchainAdminRepo         OnchainAdminRepository
+	tronConfig               *config.SelfHostedTRONConfig
+	tronOrderHealthCheck     TRONOrderHealthCheck
+	ethereumOrderRepo        EthereumOnchainOrderRepository
+	ethereumConfig           *config.SelfHostedEthereumConfig
+	ethereumOrderHealthCheck EthereumOrderHealthCheck
+	tronHotWalletCheck       TRONHotWalletCheck
+	tronResourceCheck        TRONResourceCheck
+	tronSignerHealthCheck    TRONSignerHealthCheck
+	ethereumBalanceCheck     EthereumBalanceCheck
 }
 
 func NewPaymentService(entClient *dbent.Client, registry *payment.Registry, loadBalancer payment.LoadBalancer, redeemService *RedeemService, subscriptionSvc *SubscriptionService, configService *PaymentConfigService, userRepo UserRepository, groupRepo GroupRepository, affiliateService *AffiliateService) *PaymentService {
@@ -208,6 +264,37 @@ func NewPaymentService(entClient *dbent.Client, registry *payment.Registry, load
 
 func (s *PaymentService) SetNotificationEmailService(notificationEmailService *NotificationEmailService) {
 	s.notificationEmailService = notificationEmailService
+}
+
+func (s *PaymentService) SetTRONOrderDependencies(repo OnchainOrderRepository, cfg config.SelfHostedTRONConfig, healthCheck TRONOrderHealthCheck) {
+	s.onchainOrderRepo = repo
+	if adminRepo, ok := repo.(OnchainAdminRepository); ok {
+		s.onchainAdminRepo = adminRepo
+	}
+	s.tronConfig = &cfg
+	s.tronOrderHealthCheck = healthCheck
+}
+
+func (s *PaymentService) SetEthereumOrderDependencies(repo EthereumOnchainOrderRepository, cfg config.SelfHostedEthereumConfig, healthCheck EthereumOrderHealthCheck) {
+	s.ethereumOrderRepo = repo
+	if adminRepo, ok := repo.(OnchainAdminRepository); ok {
+		s.onchainAdminRepo = adminRepo
+	}
+	s.ethereumConfig = &cfg
+	s.ethereumOrderHealthCheck = healthCheck
+}
+
+func (s *PaymentService) SetTRONHotWalletCheck(check TRONHotWalletCheck) {
+	s.tronHotWalletCheck = check
+}
+
+func (s *PaymentService) SetTRONObservabilityChecks(resourceCheck TRONResourceCheck, signerHealthCheck TRONSignerHealthCheck) {
+	s.tronResourceCheck = resourceCheck
+	s.tronSignerHealthCheck = signerHealthCheck
+}
+
+func (s *PaymentService) SetEthereumObservabilityCheck(balanceCheck EthereumBalanceCheck) {
+	s.ethereumBalanceCheck = balanceCheck
 }
 
 // --- Provider Registry ---

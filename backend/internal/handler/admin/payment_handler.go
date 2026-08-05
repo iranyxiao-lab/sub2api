@@ -44,6 +44,47 @@ func (h *PaymentHandler) GetDashboard(c *gin.Context) {
 	response.Success(c, stats)
 }
 
+// GetOnchainHealth returns node and durable scanner health by network.
+// GET /api/v1/admin/payment/onchain/health
+func (h *PaymentHandler) GetOnchainHealth(c *gin.Context) {
+	items, err := h.paymentService.GetAdminOnchainHealth(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, items)
+}
+
+// ListOnchainDeposits returns the durable on-chain deposit ledger.
+// GET /api/v1/admin/payment/onchain/deposits
+func (h *PaymentHandler) ListOnchainDeposits(c *gin.Context) {
+	params, ok := parseAdminOnchainDepositQuery(c)
+	if !ok {
+		return
+	}
+	items, total, err := h.paymentService.ListAdminOnchainDeposits(c.Request.Context(), params)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Paginated(c, items, int64(total), params.Page, params.PageSize)
+}
+
+// ListOnchainReviews returns deposits waiting for manual review.
+// GET /api/v1/admin/payment/onchain/reviews
+func (h *PaymentHandler) ListOnchainReviews(c *gin.Context) {
+	params, ok := parseAdminOnchainDepositQuery(c)
+	if !ok {
+		return
+	}
+	items, total, err := h.paymentService.ListAdminOnchainReviews(c.Request.Context(), params)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Paginated(c, items, int64(total), params.Page, params.PageSize)
+}
+
 // --- Orders ---
 
 // ListOrders returns a paginated list of all payment orders.
@@ -84,7 +125,15 @@ func (h *PaymentHandler) GetOrderDetail(c *gin.Context) {
 		return
 	}
 	auditLogs, _ := h.paymentService.GetOrderAuditLogs(c.Request.Context(), orderID)
-	response.Success(c, gin.H{"order": sanitizeAdminPaymentOrderForResponse(order), "auditLogs": auditLogs})
+	onchainTrace, err := h.paymentService.GetAdminOnchainOrderTrace(c.Request.Context(), orderID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{
+		"order": sanitizeAdminPaymentOrderForResponse(order), "auditLogs": auditLogs,
+		"onchain_trace": onchainTrace,
+	})
 }
 
 // CancelOrder cancels a pending order (admin).
@@ -472,6 +521,36 @@ func parseIDParam(c *gin.Context, paramName string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+func parseAdminOnchainDepositQuery(c *gin.Context) (service.AdminOnchainDepositQuery, bool) {
+	page, pageSize := response.ParsePagination(c)
+	params := service.AdminOnchainDepositQuery{
+		Page: page, PageSize: pageSize, Network: c.Query("network"), Status: c.Query("status"),
+		TransactionID: c.Query("transaction_id"), Address: c.Query("address"),
+	}
+	for name, target := range map[string]*int64{
+		"order_id": &params.PaymentOrderID,
+		"user_id":  &params.UserID,
+	} {
+		if raw := c.Query(name); raw != "" {
+			value, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || value <= 0 {
+				response.BadRequest(c, "Invalid "+name)
+				return service.AdminOnchainDepositQuery{}, false
+			}
+			*target = value
+		}
+	}
+	if raw := c.Query("log_index"); raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || value < 0 {
+			response.BadRequest(c, "Invalid log_index")
+			return service.AdminOnchainDepositQuery{}, false
+		}
+		params.LogIndex = &value
+	}
+	return params, true
 }
 
 // --- Config ---

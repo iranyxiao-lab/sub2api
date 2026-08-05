@@ -77,6 +77,14 @@ func RegisterPaymentRoutes(
 		// Dashboard
 		adminGroup.GET("/dashboard", adminPaymentHandler.GetDashboard)
 
+		// On-chain operations and fund tracing
+		onchain := adminGroup.Group("/onchain")
+		{
+			onchain.GET("/health", adminPaymentHandler.GetOnchainHealth)
+			onchain.GET("/deposits", adminPaymentHandler.ListOnchainDeposits)
+			onchain.GET("/reviews", adminPaymentHandler.ListOnchainReviews)
+		}
+
 		// Config
 		adminGroup.GET("/config", adminPaymentHandler.GetConfig)
 		adminGroup.PUT("/config", adminPaymentHandler.UpdateConfig)

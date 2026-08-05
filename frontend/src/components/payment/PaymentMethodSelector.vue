@@ -24,7 +24,13 @@
           <span class="flex flex-col items-start leading-none">
             <span class="text-base font-semibold">{{ methodLabel(method) }}</span>
             <span
-              v-if="method.fee_rate > 0"
+              v-if="method.unlimited_daily"
+              class="text-[10px] tracking-wide text-gray-500 dark:text-dark-400"
+            >
+              {{ t('payment.unlimitedDaily') }}
+            </span>
+            <span
+              v-else-if="method.fee_rate > 0"
               class="text-[10px] tracking-wide text-gray-500 dark:text-dark-400"
             >
               {{ t('payment.fee') }} {{ method.fee_rate }}%
@@ -51,6 +57,7 @@ export interface PaymentMethodOption {
   display_name?: string
   fee_rate: number
   available: boolean
+  unlimited_daily?: boolean
 }
 
 const props = defineProps<{

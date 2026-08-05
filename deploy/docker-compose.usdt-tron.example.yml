@@ -1,0 +1,112 @@
+# Overlay example:
+# docker compose -f docker-compose.yml -f docker-compose.usdt-tron.example.yml up -d
+#
+# JAVA_TRON_IMAGE must be an internally reviewed, digest-pinned Java-Tron image.
+# The two command variables must start the image in FullNode and SolidityNode
+# mode with the mounted configuration. No TRON or signer port is published.
+
+services:
+  sub2api:
+    networks:
+      - sub2api-network
+      - tron-observer
+      - signer-control
+    volumes:
+      - ./secrets/sub2api-signer-client:/run/secrets/sub2api-signer-client:ro
+      - ./secrets/internal-ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+
+  tron-fullnode:
+    image: ${JAVA_TRON_IMAGE:?set a digest-pinned Java-Tron image}
+    container_name: sub2api-tron-fullnode
+    restart: unless-stopped
+    command: ${JAVA_TRON_FULLNODE_COMMAND:?set the reviewed FullNode command}
+    volumes:
+      - tron_fullnode_data:/var/lib/java-tron
+      - ./tron/fullnode.conf:/etc/java-tron/config.conf:ro
+    networks:
+      - tron-node
+    security_opt:
+      - no-new-privileges:true
+
+  tron-soliditynode:
+    image: ${JAVA_TRON_IMAGE:?set a digest-pinned Java-Tron image}
+    container_name: sub2api-tron-soliditynode
+    restart: unless-stopped
+    command: ${JAVA_TRON_SOLIDITY_COMMAND:?set the reviewed SolidityNode command}
+    volumes:
+      - tron_solidity_data:/var/lib/java-tron
+      - ./tron/soliditynode.conf:/etc/java-tron/config.conf:ro
+    networks:
+      - tron-node
+    security_opt:
+      - no-new-privileges:true
+
+  tron-rpc:
+    image: caddy:2.10-alpine
+    container_name: sub2api-tron-rpc
+    restart: unless-stopped
+    depends_on:
+      - tron-fullnode
+      - tron-soliditynode
+    volumes:
+      - ./tron-rpc.Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./secrets/tron-rpc:/run/secrets/tron-rpc:ro
+    networks:
+      - tron-node
+      - tron-observer
+    read_only: true
+    tmpfs:
+      - /config:size=16m,mode=0700
+      - /data:size=16m,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  usdt-signer:
+    build:
+      context: ../backend
+      dockerfile: ../deploy/Dockerfile.usdt-signer
+    image: sub2api/usdt-signer:${USDT_SIGNER_VERSION:-local}
+    container_name: sub2api-usdt-signer
+    restart: unless-stopped
+    env_file:
+      - ./usdt-signer.env
+    environment:
+      USDT_SIGNER_LISTEN_ADDRESS: 172.31.21.10:9443
+      USDT_SIGNER_TRON_FULL_NODE_URL: https://tron-fullnode-rpc:8443
+    devices:
+      - /dev/tpmrm0:/dev/tpmrm0
+    group_add:
+      - ${TPM_GROUP_ID:?set the host TPM device group ID}
+    volumes:
+      - signer_state:/var/lib/usdt-signer
+      - ./secrets/usdt-signer:/run/secrets/usdt-signer:ro
+      - ./secrets/internal-ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    networks:
+      signer-control:
+        ipv4_address: 172.31.21.10
+      tron-observer: {}
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  tron_fullnode_data:
+  tron_solidity_data:
+  signer_state:
+
+networks:
+  tron-node:
+    internal: true
+  tron-observer:
+    internal: true
+  signer-control:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.21.0/24

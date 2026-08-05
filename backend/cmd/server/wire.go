@@ -108,6 +108,10 @@ func provideCleanup(
 	scheduledTestRunner *service.ScheduledTestRunnerService,
 	backupSvc *service.BackupService,
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
+	onchainScanner *service.OnchainScannerRuntime,
+	onchainSettlement *service.OnchainSettlementRuntime,
+	onchainReconciliation *service.OnchainReconciliationRuntime,
+	onchainSweep *service.OnchainSweepRuntime,
 	channelMonitorRunner *service.ChannelMonitorRunner,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
@@ -311,6 +315,30 @@ func provideCleanup(
 			{"PaymentOrderExpiryService", func() error {
 				if paymentOrderExpiry != nil {
 					paymentOrderExpiry.Stop()
+				}
+				return nil
+			}},
+			{"OnchainScannerRuntime", func() error {
+				if onchainScanner != nil {
+					onchainScanner.Stop()
+				}
+				return nil
+			}},
+			{"OnchainSettlementRuntime", func() error {
+				if onchainSettlement != nil {
+					onchainSettlement.Stop()
+				}
+				return nil
+			}},
+			{"OnchainReconciliationRuntime", func() error {
+				if onchainReconciliation != nil {
+					onchainReconciliation.Stop()
+				}
+				return nil
+			}},
+			{"OnchainSweepRuntime", func() error {
+				if onchainSweep != nil {
+					onchainSweep.Stop()
 				}
 				return nil
 			}},

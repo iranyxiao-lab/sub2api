@@ -101,6 +101,87 @@ webauthn:
 run_mode: "standard"
 
 # =============================================================================
+# Self-hosted on-chain USDT (TRON)
+# 自托管链上 USDT（TRON）
+# =============================================================================
+# All switches default to false. This section accepts public xpub/address data
+# only; never put a mnemonic, seed, xprv, or child private key in Sub2API config.
+# 所有开关默认关闭。本节只允许公开 xpub/地址，禁止填写助记词、seed、xprv 或子私钥。
+onchain:
+  tron:
+    enabled: false
+    order_creation_enabled: false
+    scanner_enabled: false
+    settlement_enabled: false
+    sweeper_enabled: false
+    network: "tron-mainnet"
+    full_node_url: ""
+    solidity_node_url: ""
+    solidity_node_fallback_url: ""
+    usdt_contract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+    usdt_decimals: 6
+    xpub: ""
+    sweep_address: ""
+    request_timeout_seconds: 10
+    response_max_bytes: 8388608
+    max_block_lag: 20
+    scan_batch_size: 100
+    scan_safety_window: 20
+    scan_lease_seconds: 30
+    scan_stall_alert_seconds: 120
+    settlement_backlog_alert_count: 100
+    resource_wait_alert_count: 1
+    reconciliation_interval_seconds: 300
+    sweep_minimum_amount_raw: "50000000"
+    sweep_required_energy: 130000
+    sweep_required_bandwidth: 400
+    sweep_minimum_trx_sun: 100000000
+    sweep_batch_size: 100
+    signer_url: ""
+    signer_client_cert_file: ""
+    signer_client_key_file: ""
+    signer_server_ca_file: ""
+    signer_server_identity_uri: "spiffe://sub2api.internal/usdt-signer"
+    signer_timeout_seconds: 15
+    sweep_max_consecutive_failures: 3
+    sweep_retry_backoff_seconds: 30
+    sweep_confirmation_poll_seconds: 30
+    hot_wallet_warning_amount_raw: "50000000000"
+    hot_wallet_cold_approval_amount_raw: "100000000000"
+    config_version: "tron-config-v1"
+  ethereum:
+    enabled: false
+    order_creation_enabled: false
+    scanner_enabled: false
+    settlement_enabled: false
+    sweeper_enabled: false
+    network: "ethereum-mainnet"
+    chain_id: 1
+    primary_rpc_url: ""
+    backup_rpc_url: ""
+    usdt_contract: "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+    usdt_decimals: 6
+    xpub: ""
+    sweep_address: ""
+    request_timeout_seconds: 10
+    response_max_bytes: 8388608
+    rpc_batch_limit: 100
+    rpc_max_log_range: 2000
+    max_finalized_lag: 64
+    scan_batch_size: 1000
+    scan_safety_window: 64
+    scan_lease_seconds: 30
+    scan_stall_alert_seconds: 180
+    settlement_backlog_alert_count: 100
+    pending_nonce_alert_count: 1
+    stuck_transaction_alert_seconds: 900
+    replacement_transaction_alert_count: 1
+    unswept_balance_alert_raw: "200000000"
+    gas_cost_alert_wei: "100000000000000000"
+    gas_sponsor_min_balance_wei: "10000000000000000"
+    config_version: "ethereum-config-v1"
+
+# =============================================================================
 # CORS Configuration
 # 跨域资源共享 (CORS) 配置
 # =============================================================================

@@ -1,0 +1,24 @@
+ARG GOLANG_IMAGE=golang:1.26.5-alpine
+ARG ALPINE_IMAGE=alpine:3.20
+
+FROM ${GOLANG_IMAGE} AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags="-s -w -X main.Version=${VERSION}" \
+    -o /out/usdt-signer \
+    ./cmd/usdt-signer
+
+FROM ${ALPINE_IMAGE}
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -S -g 10001 signer && \
+    adduser -S -D -H -u 10001 -G signer signer && \
+    install -d -o signer -g signer -m 0700 /var/lib/usdt-signer
+COPY --from=builder /out/usdt-signer /usr/local/bin/usdt-signer
+USER 10001:10001
+EXPOSE 9443
+ENTRYPOINT ["/usr/local/bin/usdt-signer"]

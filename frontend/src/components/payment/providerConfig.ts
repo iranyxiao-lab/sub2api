@@ -42,13 +42,15 @@ export const PROVIDER_SUPPORTED_TYPES: Record<string, string[]> = {
   wxpay: ['wxpay'],
   stripe: ['card', 'alipay', 'wxpay', 'link'],
   airwallex: ['airwallex'],
+  usdt_trc20: ['usdt_trc20'],
+  usdt_erc20: ['usdt_erc20'],
 }
 
 /** Available payment modes for EasyPay providers. */
 export const EASYPAY_PAYMENT_MODES = ['qrcode', 'popup'] as const
 
 /** Fixed display order for user-facing payment methods */
-export const METHOD_ORDER = ['alipay', 'alipay_direct', 'wxpay', 'wxpay_direct', 'stripe', 'airwallex'] as const
+export const METHOD_ORDER = ['alipay', 'alipay_direct', 'wxpay', 'wxpay_direct', 'stripe', 'airwallex', 'usdt_trc20', 'usdt_erc20'] as const
 
 export function isBuiltInAlipayMethod(type: string): boolean {
   return type === 'alipay' || type === 'alipay_direct'
@@ -161,6 +163,25 @@ export const PROVIDER_CONFIG_FIELDS: Record<string, ConfigFieldDef[]> = {
     { key: 'currency', label: '', sensitive: false, defaultValue: 'CNY', hintKey: 'admin.settings.payment.field_paymentCurrencyHint', options: PAYMENT_CURRENCY_OPTIONS },
     { key: 'accountId', label: '', sensitive: false, optional: true, clearable: true, hintKey: 'admin.settings.payment.field_accountIdHint' },
   ],
+	usdt_trc20: [
+		{ key: 'network', label: 'Network', sensitive: false, defaultValue: 'tron-mainnet', options: [
+			{ value: 'tron-mainnet', label: 'TRON Mainnet' },
+			{ value: 'tron-nile', label: 'TRON Nile' },
+		] },
+		{ key: 'usdtContract', label: 'USDT Contract', sensitive: false, defaultValue: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t' },
+		{ key: 'usdtDecimals', label: 'USDT Decimals', sensitive: false, defaultValue: '6' },
+		{ key: 'configVersion', label: 'Config Version', sensitive: false, defaultValue: 'tron-config-v1' },
+	],
+	usdt_erc20: [
+		{ key: 'network', label: 'Network', sensitive: false, defaultValue: 'ethereum-mainnet', options: [
+			{ value: 'ethereum-mainnet', label: 'Ethereum Mainnet' },
+			{ value: 'ethereum-sepolia', label: 'Ethereum Sepolia' },
+		] },
+		{ key: 'chainId', label: 'Chain ID', sensitive: false, defaultValue: '1' },
+		{ key: 'usdtContract', label: 'USDT Contract', sensitive: false, defaultValue: '0xdAC17F958D2ee523a2206206994597C13D831ec7' },
+		{ key: 'usdtDecimals', label: 'USDT Decimals', sensitive: false, defaultValue: '6' },
+		{ key: 'configVersion', label: 'Config Version', sensitive: false, defaultValue: 'ethereum-config-v1' },
+	],
 }
 
 // --- Helpers ---

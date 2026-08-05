@@ -9,6 +9,7 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/stretchr/testify/require"
 )
 
 func TestShouldUseAlipayMobilePrecreate(t *testing.T) {
@@ -142,6 +143,28 @@ func TestBuildCreateOrderResponseCopiesJSAPIPayload(t *testing.T) {
 	if resp.JSAPI != jsapiPayload || resp.JSAPIPayload != jsapiPayload {
 		t.Fatal("expected jsapi aliases to preserve the original pointer")
 	}
+}
+
+func TestBuildCreateOrderResponseCopiesStructuredOnchainPayment(t *testing.T) {
+	t.Parallel()
+
+	expiresAt := time.Date(2026, 4, 16, 14, 0, 0, 0, time.UTC)
+	onchainPayment := &payment.OnchainPaymentInfo{
+		Network: "tron-mainnet", Token: "USDT", TokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+		Address: "TD8icGtfdGTCyxRvsoszeaKbTdrFHFfkbk", Amount: "10", QRCode: "TD8icGtfdGTCyxRvsoszeaKbTdrFHFfkbk",
+		ReceivedAmount: "0", PendingAmount: "10", ExpiresAt: expiresAt,
+	}
+	resp := buildCreateOrderResponse(
+		&dbent.PaymentOrder{ID: 99, Amount: 10, ExpiresAt: expiresAt, OutTradeNo: "sub2_99"},
+		CreateOrderRequest{PaymentType: payment.TypeUSDTTRC20}, 10,
+		&payment.InstanceSelection{PaymentMode: "qrcode"},
+		&payment.CreatePaymentResponse{OnchainPayment: onchainPayment},
+		payment.CreatePaymentResultOrderCreated,
+	)
+
+	require.Same(t, onchainPayment, resp.OnchainPayment)
+	require.Equal(t, "10", resp.OnchainPayment.Amount)
+	require.Equal(t, expiresAt, resp.OnchainPayment.ExpiresAt)
 }
 
 func TestSanitizeCreatePaymentResponseDetailsRemovesNULBytes(t *testing.T) {

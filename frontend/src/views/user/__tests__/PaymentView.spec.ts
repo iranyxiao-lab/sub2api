@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import PaymentView from '../PaymentView.vue'
+import PaymentMethodSelector from '@/components/payment/PaymentMethodSelector.vue'
 import { PAYMENT_RECOVERY_STORAGE_KEY } from '@/components/payment/paymentFlow'
 import { formatPaymentAmount } from '@/components/payment/currency'
 import type { CheckoutInfoResponse, MethodLimit, SubscriptionPlan } from '@/types/payment'
@@ -237,6 +238,24 @@ async function mountSubscriptionConfirm(options: Parameters<typeof checkoutInfoW
 }
 
 describe('PaymentView subscription confirmation amounts', () => {
+  it('hides both USDT network methods from subscription checkout', async () => {
+    const baseMethod = checkoutInfoFixture().data.methods.wxpay
+    const wrapper = await mountSubscriptionConfirm({
+      checkout: {
+        methods: {
+          wxpay: baseMethod,
+          usdt_trc20: { ...baseMethod, display_name: 'USDT (TRC20)' },
+          usdt_erc20: { ...baseMethod, display_name: 'USDT (ERC20)' },
+        },
+      },
+    })
+
+    const selector = wrapper.findComponent(PaymentMethodSelector)
+    const methods = selector.props('methods') as Array<{ type: string }>
+    expect(methods.map(method => method.type)).toEqual(['wxpay'])
+    expect(createOrder).not.toHaveBeenCalled()
+  })
+
   it('shows converted CNY pay amount using the subscription rate, not the balance multiplier', async () => {
     const wrapper = await mountSubscriptionConfirm({
       checkout: {

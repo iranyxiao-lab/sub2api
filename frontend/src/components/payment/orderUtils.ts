@@ -7,6 +7,8 @@ const STATUS_BADGE_MAP: Record<string, string> = {
   PENDING: 'badge-warning',
   PAID: 'badge-info',
   RECHARGING: 'badge-info',
+  PARTIALLY_PAID: 'badge-warning',
+  REVIEW_REQUIRED: 'badge-warning',
   COMPLETED: 'badge-success',
   EXPIRED: 'badge-secondary',
   CANCELLED: 'badge-secondary',

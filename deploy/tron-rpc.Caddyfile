@@ -1,0 +1,14 @@
+{
+    admin off
+    auto_https off
+}
+
+https://tron-fullnode-rpc:8443 {
+    tls /run/secrets/tron-rpc/fullnode.crt /run/secrets/tron-rpc/fullnode.key
+    reverse_proxy tron-fullnode:8090
+}
+
+https://tron-solidity-rpc:8444 {
+    tls /run/secrets/tron-rpc/solidity.crt /run/secrets/tron-rpc/solidity.key
+    reverse_proxy tron-soliditynode:8091
+}

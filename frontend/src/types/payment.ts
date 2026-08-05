@@ -15,11 +15,13 @@ export type OrderStatus =
   | 'REFUND_REQUESTED'
   | 'REFUNDING'
   | 'REFUND_PENDING'
+  | 'PARTIALLY_PAID'
+  | 'REVIEW_REQUIRED'
   | 'PARTIALLY_REFUNDED'
   | 'REFUNDED'
   | 'REFUND_FAILED'
 
-export type PaymentType = 'alipay' | 'wxpay' | 'alipay_direct' | 'wxpay_direct' | 'stripe' | 'easypay' | 'airwallex'
+export type PaymentType = 'alipay' | 'wxpay' | 'alipay_direct' | 'wxpay_direct' | 'stripe' | 'easypay' | 'airwallex' | 'usdt_trc20' | 'usdt_erc20'
 
 export type OrderType = 'balance' | 'subscription'
 
@@ -104,6 +106,7 @@ export interface PaymentOrder {
   refund_request_reason?: string
   plan_id?: number
   provider_instance_id?: string
+  onchain_payment?: OnchainPaymentInfo
 }
 
 // ==================== Plans & Channels ====================
@@ -198,6 +201,20 @@ export interface WechatJSAPIPayload {
   paySign?: string
 }
 
+export interface OnchainPaymentInfo {
+  network: string
+  chain_id: number
+  token: string
+  token_contract: string
+  address: string
+  amount: string
+  qr_code: string
+  received_amount: string
+  pending_amount: string
+  expires_at: string
+  status?: string
+}
+
 export interface CreateOrderResult {
   order_id: number
   amount: number
@@ -220,6 +237,7 @@ export interface CreateOrderResult {
   oauth?: WechatOAuthInfo
   jsapi?: WechatJSAPIPayload
   jsapi_payload?: WechatJSAPIPayload
+	onchain_payment?: OnchainPaymentInfo
 }
 
 export type CurrencyAmounts = Record<string, number>

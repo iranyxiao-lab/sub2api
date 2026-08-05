@@ -47,8 +47,18 @@
         </div>
       </div>
 
+      <div
+        v-if="isOnchainRefund"
+        class="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200"
+      >
+        <div class="flex items-start gap-2">
+          <Icon name="ban" size="sm" class="mt-0.5 shrink-0" />
+          <p>{{ t('payment.admin.onchainRefundManualOnly') }}</p>
+        </div>
+      </div>
+
       <!-- Deduct Balance -->
-      <div>
+      <div v-if="!isOnchainRefund">
         <div class="flex items-center gap-2">
           <input
             id="deduct-balance"
@@ -156,7 +166,7 @@
           :disabled="submitting || form.amount <= 0 || (requireForce && !form.force)"
           class="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 disabled:opacity-50 dark:focus:ring-offset-dark-800"
         >
-          {{ submitting ? t('common.processing') : t('payment.admin.confirmRefund') }}
+          {{ submitting ? t('common.processing') : isOnchainRefund ? t('payment.admin.createRefundReview') : t('payment.admin.confirmRefund') }}
         </button>
       </div>
     </template>
@@ -167,6 +177,7 @@
 import { reactive, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import Icon from '@/components/icons/Icon.vue'
 import type { PaymentOrder } from '@/types/payment'
 import { formatOrderDateTime } from '@/components/payment/orderUtils'
 import { currencySymbol } from '@/components/payment/currency'
@@ -190,6 +201,11 @@ const emit = defineEmits<{
 const creditedAmountSymbol = currencySymbol('USD')
 
 const paymentAmountSymbol = computed(() => currencySymbol(props.order?.currency))
+
+const isOnchainRefund = computed(() => {
+  const paymentType = props.order?.payment_type
+  return paymentType === 'usdt_trc20' || paymentType === 'usdt_erc20'
+})
 
 const form = reactive({
   amount: 0,
@@ -226,7 +242,7 @@ watch(() => props.show, (val) => {
       form.amount = maxRefundable.value
     }
     form.reason = props.order.refund_request_reason || ''
-    form.deduct_balance = true
+    form.deduct_balance = !isOnchainRefund.value
     form.force = false
   }
 })
@@ -238,6 +254,6 @@ function formatDateTime(dateStr: string): string {
 function handleSubmit() {
   if (form.amount <= 0 || form.amount > maxRefundable.value) return
   if (props.requireForce && !form.force) return
-  emit('confirm', { ...form })
+  emit('confirm', { ...form, deduct_balance: isOnchainRefund.value ? false : form.deduct_balance })
 }
 </script>

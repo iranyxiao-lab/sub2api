@@ -2,11 +2,13 @@ package handler
 
 import (
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/onchain"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -620,27 +622,28 @@ func isMobile(c *gin.Context) bool {
 }
 
 type PaymentOrderResult struct {
-	ID                  int64      `json:"id"`
-	UserID              int64      `json:"user_id"`
-	Amount              float64    `json:"amount"`
-	PayAmount           float64    `json:"pay_amount"`
-	FeeRate             float64    `json:"fee_rate"`
-	Currency            string     `json:"currency"`
-	PaymentType         string     `json:"payment_type"`
-	OutTradeNo          string     `json:"out_trade_no"`
-	Status              string     `json:"status"`
-	OrderType           string     `json:"order_type"`
-	CreatedAt           time.Time  `json:"created_at"`
-	ExpiresAt           time.Time  `json:"expires_at"`
-	PaidAt              *time.Time `json:"paid_at,omitempty"`
-	CompletedAt         *time.Time `json:"completed_at,omitempty"`
-	RefundAmount        float64    `json:"refund_amount"`
-	RefundReason        *string    `json:"refund_reason,omitempty"`
-	RefundRequestedAt   *time.Time `json:"refund_requested_at,omitempty"`
-	RefundRequestedBy   *string    `json:"refund_requested_by,omitempty"`
-	RefundRequestReason *string    `json:"refund_request_reason,omitempty"`
-	PlanID              *int64     `json:"plan_id,omitempty"`
-	ProviderInstanceID  *string    `json:"provider_instance_id,omitempty"`
+	ID                  int64                       `json:"id"`
+	UserID              int64                       `json:"user_id"`
+	Amount              float64                     `json:"amount"`
+	PayAmount           float64                     `json:"pay_amount"`
+	FeeRate             float64                     `json:"fee_rate"`
+	Currency            string                      `json:"currency"`
+	PaymentType         string                      `json:"payment_type"`
+	OutTradeNo          string                      `json:"out_trade_no"`
+	Status              string                      `json:"status"`
+	OrderType           string                      `json:"order_type"`
+	CreatedAt           time.Time                   `json:"created_at"`
+	ExpiresAt           time.Time                   `json:"expires_at"`
+	PaidAt              *time.Time                  `json:"paid_at,omitempty"`
+	CompletedAt         *time.Time                  `json:"completed_at,omitempty"`
+	RefundAmount        float64                     `json:"refund_amount"`
+	RefundReason        *string                     `json:"refund_reason,omitempty"`
+	RefundRequestedAt   *time.Time                  `json:"refund_requested_at,omitempty"`
+	RefundRequestedBy   *string                     `json:"refund_requested_by,omitempty"`
+	RefundRequestReason *string                     `json:"refund_request_reason,omitempty"`
+	PlanID              *int64                      `json:"plan_id,omitempty"`
+	ProviderInstanceID  *string                     `json:"provider_instance_id,omitempty"`
+	OnchainPayment      *payment.OnchainPaymentInfo `json:"onchain_payment,omitempty"`
 }
 
 func sanitizePaymentOrdersForResponse(orders []*dbent.PaymentOrder) []PaymentOrderResult {
@@ -679,7 +682,78 @@ func sanitizePaymentOrderForResponse(order *dbent.PaymentOrder) *PaymentOrderRes
 		RefundRequestReason: order.RefundRequestReason,
 		PlanID:              order.PlanID,
 		ProviderInstanceID:  order.ProviderInstanceID,
+		OnchainPayment:      buildOnchainPaymentInfo(order),
 	}
+}
+
+func buildOnchainPaymentInfo(order *dbent.PaymentOrder) *payment.OnchainPaymentInfo {
+	if order == nil || order.Edges.OnchainPaymentIntent == nil {
+		return nil
+	}
+	intent := order.Edges.OnchainPaymentIntent
+	decimals, ok := onchainTokenDecimals(intent.ConfigSnapshot)
+	if !ok {
+		return nil
+	}
+	expected, expectedOK := new(big.Int).SetString(intent.ExpectedAmountRaw, 10)
+	received, receivedOK := new(big.Int).SetString(intent.ReceivedAmountRaw, 10)
+	if !expectedOK || !receivedOK || expected.Sign() < 0 || received.Sign() < 0 {
+		return nil
+	}
+	pending := new(big.Int).Sub(new(big.Int).Set(expected), received)
+	if pending.Sign() < 0 {
+		pending.SetInt64(0)
+	}
+	expectedAmount, err := onchain.FormatRaw(expected, decimals)
+	if err != nil {
+		return nil
+	}
+	receivedAmount, err := onchain.FormatRaw(received, decimals)
+	if err != nil {
+		return nil
+	}
+	pendingAmount, err := onchain.FormatRaw(pending, decimals)
+	if err != nil {
+		return nil
+	}
+	token, _ := intent.ConfigSnapshot["token"].(string)
+	if strings.TrimSpace(token) == "" {
+		token = "USDT"
+	}
+	return &payment.OnchainPaymentInfo{
+		Network: intent.Network, ChainID: uint64(intent.ChainID), Token: token,
+		TokenContract: intent.TokenContract, Address: intent.DepositAddress,
+		Amount: expectedAmount, QRCode: intent.DepositAddress,
+		ReceivedAmount: receivedAmount, PendingAmount: pendingAmount,
+		ExpiresAt: order.ExpiresAt, Status: intent.Status,
+	}
+}
+
+func onchainTokenDecimals(snapshot map[string]any) (uint8, bool) {
+	value, ok := snapshot["token_decimals"]
+	if !ok {
+		return 0, false
+	}
+	var decimals int64
+	switch typed := value.(type) {
+	case int:
+		decimals = int64(typed)
+	case int64:
+		decimals = typed
+	case uint8:
+		decimals = int64(typed)
+	case float64:
+		if typed != float64(int64(typed)) {
+			return 0, false
+		}
+		decimals = int64(typed)
+	default:
+		return 0, false
+	}
+	if decimals < 0 || decimals > 18 {
+		return 0, false
+	}
+	return uint8(decimals), true
 }
 
 func isWeChatBrowser(c *gin.Context) bool {

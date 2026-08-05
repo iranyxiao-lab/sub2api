@@ -642,6 +642,7 @@ export default {
         providerWxpay: '微信官方',
         providerStripe: 'Stripe',
         providerAirwallex: 'Airwallex',
+		providerUSDTTRC20: 'USDT（TRC20）',
         typeDisabled: '类型已禁用',
         enableTypesFirst: '请先在上方启用至少一种服务商',
         easypayRedirect: '跳转',

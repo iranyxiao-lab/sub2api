@@ -1,6 +1,8 @@
 <template>
   <AppLayout>
     <div class="space-y-4">
+      <AdminOnchainOperations @view-order="showOrderDetailById" />
+
       <!-- Filters -->
       <div class="card p-4">
         <div class="flex flex-wrap items-center gap-3">
@@ -36,7 +38,11 @@
             </button>
             <template v-if="row.status === 'REFUND_REQUESTED'">
               <span v-if="row.refund_amount" class="rounded-full bg-purple-100 px-1.5 py-0.5 text-xs font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">{{ creditedAmountSymbol }}{{ row.refund_amount.toFixed(2) }}</span>
-              <button @click="openRefundDialog(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-purple-600 hover:bg-purple-50 dark:text-purple-400 dark:hover:bg-purple-900/20">
+              <span v-if="isOnchainPayment(row.payment_type)" class="inline-flex items-center gap-1 text-xs font-medium text-amber-600 dark:text-amber-400">
+                <Icon name="ban" size="sm" />
+                {{ t('payment.admin.manualReviewPending') }}
+              </span>
+              <button v-else @click="openRefundDialog(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-purple-600 hover:bg-purple-50 dark:text-purple-400 dark:hover:bg-purple-900/20">
                 <Icon name="check" size="sm" />
                 {{ t('payment.admin.approveRefund') }}
               </button>
@@ -94,6 +100,117 @@
             </div>
           </div>
         </div>
+        <!-- On-chain fund trace -->
+        <div v-if="selectedOnchainTrace" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+          <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('payment.admin.fundTrace') }}</p>
+            <span class="badge bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+              {{ networkLabel(selectedOnchainTrace.intent.network) }}
+            </span>
+          </div>
+          <div class="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <p class="text-xs text-gray-500">{{ t('payment.admin.intentStatus') }}</p>
+              <p class="font-medium text-gray-900 dark:text-white">{{ selectedOnchainTrace.intent.status }}</p>
+            </div>
+            <div>
+              <p class="text-xs text-gray-500">{{ t('payment.admin.expectedAmount') }}</p>
+              <p class="font-mono text-gray-900 dark:text-white">{{ formatUSDT(selectedOnchainTrace.intent.expected_amount_raw) }} USDT</p>
+            </div>
+            <div>
+              <p class="text-xs text-gray-500">{{ t('payment.admin.receivedAmount') }}</p>
+              <p class="font-mono text-gray-900 dark:text-white">{{ formatUSDT(selectedOnchainTrace.intent.received_amount_raw) }} USDT</p>
+            </div>
+            <div>
+              <p class="text-xs text-gray-500">{{ t('payment.admin.creditedOnchainAmount') }}</p>
+              <p class="font-mono text-gray-900 dark:text-white">{{ formatUSDT(selectedOnchainTrace.intent.credited_amount_raw) }} USDT</p>
+            </div>
+            <div class="sm:col-span-2 lg:col-span-4">
+              <p class="text-xs text-gray-500">{{ t('payment.admin.depositAddress') }}</p>
+              <p class="break-all font-mono text-xs text-gray-900 dark:text-white">{{ selectedOnchainTrace.intent.deposit_address }}</p>
+            </div>
+            <div class="sm:col-span-2 lg:col-span-4">
+              <p class="text-xs text-gray-500">{{ t('payment.admin.tokenContract') }}</p>
+              <p class="break-all font-mono text-xs text-gray-700 dark:text-gray-300">{{ selectedOnchainTrace.intent.token_contract }}</p>
+            </div>
+          </div>
+          <p v-if="selectedOnchainTrace.intent.last_error_message" class="mt-3 break-all text-xs text-red-600 dark:text-red-400">
+            {{ selectedOnchainTrace.intent.last_error_code }}: {{ selectedOnchainTrace.intent.last_error_message }}
+          </p>
+
+          <div class="mt-4 overflow-x-auto">
+            <p class="mb-2 text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('payment.admin.onchainDeposits') }}</p>
+            <table class="min-w-full divide-y divide-gray-200 text-left text-xs dark:divide-dark-700">
+              <thead class="text-gray-500">
+                <tr>
+                  <th class="px-2 py-2 font-medium">{{ t('payment.admin.transactionLog') }}</th>
+                  <th class="px-2 py-2 font-medium">{{ t('payment.orders.amount') }}</th>
+                  <th class="px-2 py-2 font-medium">{{ t('payment.admin.block') }}</th>
+                  <th class="px-2 py-2 font-medium">{{ t('payment.orders.status') }}</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
+                <tr v-for="deposit in selectedOnchainTrace.deposits" :key="deposit.id" class="align-top">
+                  <td class="max-w-80 px-2 py-2">
+                    <p class="break-all font-mono text-gray-800 dark:text-gray-200">{{ deposit.transaction_id }}</p>
+                    <p class="text-gray-500">log {{ deposit.log_index }}</p>
+                  </td>
+                  <td class="whitespace-nowrap px-2 py-2 font-mono">{{ formatUSDT(deposit.amount_raw) }} USDT</td>
+                  <td class="whitespace-nowrap px-2 py-2">#{{ deposit.block_height }}</td>
+                  <td class="px-2 py-2">
+                    <p>{{ deposit.status }}</p>
+                    <p class="text-gray-500">{{ t('payment.admin.receipt') }}: {{ deposit.receipt_success ? t('payment.admin.success') : t('payment.admin.failed') }}</p>
+                  </td>
+                </tr>
+                <tr v-if="selectedOnchainTrace.deposits.length === 0">
+                  <td colspan="4" class="px-2 py-4 text-center text-gray-500">{{ t('payment.admin.noOnchainDeposits') }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div v-if="selectedOnchainTrace.sweeps.length > 0" class="mt-4">
+            <p class="mb-2 text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('payment.admin.walletSweeps') }}</p>
+            <div class="space-y-2">
+              <div v-for="sweep in selectedOnchainTrace.sweeps" :key="sweep.id" class="rounded-md border border-gray-200 px-3 py-2 text-xs dark:border-dark-600">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <span class="font-medium text-gray-800 dark:text-gray-200">{{ formatUSDT(sweep.amount_raw) }} USDT</span>
+                  <span>{{ sweep.status }}</span>
+                </div>
+                <p class="mt-1 break-all font-mono text-gray-500">{{ sweep.transaction_id || '-' }}</p>
+                <p v-if="sweep.failure_reason" class="mt-1 break-all text-red-600">{{ sweep.failure_code }}: {{ sweep.failure_reason }}</p>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="selectedOnchainTrace.gas_fundings.length > 0" class="mt-4">
+            <p class="mb-2 text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('payment.admin.gasFundings') }}</p>
+            <div class="space-y-2">
+              <div v-for="funding in selectedOnchainTrace.gas_fundings" :key="funding.id" class="rounded-md border border-gray-200 px-3 py-2 text-xs dark:border-dark-600">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <span class="font-mono text-gray-800 dark:text-gray-200">{{ funding.amount_wei }} wei</span>
+                  <span>{{ funding.status }}</span>
+                </div>
+                <p class="mt-1 break-all font-mono text-gray-500">{{ funding.transaction_hash || '-' }}</p>
+                <p v-if="funding.failure_reason" class="mt-1 break-all text-red-600">{{ funding.failure_code }}: {{ funding.failure_reason }}</p>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="selectedOnchainTrace.nonce_states.length > 0" class="mt-4">
+            <p class="mb-2 text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('payment.admin.nonceStates') }}</p>
+            <div class="space-y-2">
+              <div v-for="nonce in selectedOnchainTrace.nonce_states" :key="nonce.id" class="rounded-md border border-gray-200 px-3 py-2 text-xs dark:border-dark-600">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <span class="break-all font-mono text-gray-800 dark:text-gray-200">{{ nonce.sender_address }}</span>
+                  <span>{{ nonce.status }}</span>
+                </div>
+                <p class="mt-1 font-mono text-gray-500">{{ t('payment.admin.nextObservedNonce') }}: {{ nonce.next_nonce }} / {{ nonce.observed_pending_nonce }}</p>
+                <p v-if="nonce.last_error_message" class="mt-1 break-all text-red-600">{{ nonce.last_error_code }}: {{ nonce.last_error_message }}</p>
+              </div>
+            </div>
+          </div>
+        </div>
         <!-- Audit Logs -->
         <div v-if="orderAuditLogs.length > 0" class="border-t border-gray-200 pt-4 dark:border-dark-600">
           <p class="mb-2 text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('payment.admin.auditLogs') }}</p>
@@ -120,6 +237,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminPaymentAPI } from '@/api/admin/payment'
+import type { AdminOnchainOrderTrace, AdminPaymentAuditLog } from '@/api/admin/payment'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { formatOrderDateTime } from '@/components/payment/orderUtils'
 import type { PaymentOrder } from '@/types/payment'
@@ -131,15 +249,8 @@ import Icon from '@/components/icons/Icon.vue'
 import AdminRefundDialog from '@/components/admin/payment/AdminRefundDialog.vue'
 import OrderStatusBadge from '@/components/payment/OrderStatusBadge.vue'
 import OrderTable from '@/components/payment/OrderTable.vue'
+import AdminOnchainOperations from '@/components/admin/payment/AdminOnchainOperations.vue'
 import { currencySymbol } from '@/components/payment/currency'
-
-interface AuditLog {
-  id: number
-  action: string
-  detail: string | null
-  operator: string | null
-  created_at: string
-}
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -154,7 +265,8 @@ const showDetailDialog = ref(false)
 const showRefundDialog = ref(false)
 const refundSubmitting = ref(false)
 const refundQueryingIds = ref(new Set<number>())
-const orderAuditLogs = ref<AuditLog[]>([])
+const orderAuditLogs = ref<AdminPaymentAuditLog[]>([])
+const selectedOnchainTrace = ref<AdminOnchainOrderTrace | null>(null)
 const creditedAmountSymbol = currencySymbol('USD')
 
 function paymentAmountSymbol(order: PaymentOrder | null | undefined): string {
@@ -205,6 +317,8 @@ const paymentTypeFilterOptions = computed(() => [
   { value: 'wxpay', label: t('payment.methods.wxpay') },
   { value: 'stripe', label: t('payment.methods.stripe') },
   { value: 'airwallex', label: t('payment.methods.airwallex') },
+  { value: 'usdt_trc20', label: t('payment.methods.usdt_trc20') },
+  { value: 'usdt_erc20', label: t('payment.methods.usdt_erc20') },
 ])
 
 const orderTypeFilterOptions = computed(() => [
@@ -216,12 +330,25 @@ const orderTypeFilterOptions = computed(() => [
 async function showOrderDetail(order: PaymentOrder) {
   selectedOrder.value = order
   orderAuditLogs.value = []
+  selectedOnchainTrace.value = null
   showDetailDialog.value = true
+  await loadOrderDetail(order.id)
+}
+
+async function showOrderDetailById(orderId: number) {
+  selectedOrder.value = null
+  orderAuditLogs.value = []
+  selectedOnchainTrace.value = null
+  showDetailDialog.value = true
+  await loadOrderDetail(orderId)
+}
+
+async function loadOrderDetail(orderId: number) {
   try {
-    const res = await adminPaymentAPI.getOrder(order.id)
-    const data = res.data as unknown as Record<string, unknown>
-    if (data.order) selectedOrder.value = data.order as PaymentOrder
-    orderAuditLogs.value = ((data.auditLogs || data.audit_logs || []) as unknown) as AuditLog[]
+    const res = await adminPaymentAPI.getOrder(orderId)
+    selectedOrder.value = res.data.order
+    orderAuditLogs.value = res.data.auditLogs || []
+    selectedOnchainTrace.value = res.data.onchain_trace
   } catch (_err: unknown) { /* keep cached order data */ }
 }
 
@@ -246,6 +373,12 @@ async function handleRefund(data: { amount: number; reason: string; deduct_balan
   refundSubmitting.value = true
   try {
     const res = await adminPaymentAPI.refundOrder(selectedOrder.value.id, { amount: data.amount, reason: data.reason, deduct_balance: data.deduct_balance, force: data.force })
+    if (res.data.manual_review_required) {
+      appStore.showSuccess(t('payment.admin.refundReviewCreated'))
+      showRefundDialog.value = false
+      loadOrders()
+      return
+    }
     if (res.data.success) {
       appStore.showSuccess(t('payment.admin.refundSuccess'))
       showRefundDialog.value = false
@@ -285,6 +418,24 @@ async function handleQueryRefund(order: PaymentOrder) {
 }
 
 function formatDateTime(dateStr: string): string { return formatOrderDateTime(dateStr) }
+
+function networkLabel(network: string): string {
+  if (network.startsWith('tron-')) return 'TRON (TRC20)'
+  if (network.startsWith('ethereum-')) return 'Ethereum (ERC20)'
+  return network
+}
+
+function formatUSDT(raw: string): string {
+  const normalized = String(raw || '0').replace(/^0+(?=\d)/, '')
+  const padded = normalized.padStart(7, '0')
+  const whole = padded.slice(0, -6)
+  const fraction = padded.slice(-6).replace(/0+$/, '')
+  return fraction ? `${whole}.${fraction}` : whole
+}
+
+function isOnchainPayment(paymentType: string): boolean {
+  return paymentType === 'usdt_trc20' || paymentType === 'usdt_erc20'
+}
 
 onMounted(() => loadOrders())
 </script>

@@ -2,7 +2,10 @@
 // registry, load balancing, and shared utilities for the payment subsystem.
 package payment
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // PaymentType represents a supported payment method.
 type PaymentType = string
@@ -18,11 +21,19 @@ const (
 	TypeLink         PaymentType = "link"
 	TypeEasyPay      PaymentType = "easypay"
 	TypeAirwallex    PaymentType = "airwallex"
+	TypeUSDTTRC20    PaymentType = "usdt_trc20"
+	TypeUSDTERC20    PaymentType = "usdt_erc20"
 )
+
+func IsOnchainUSDT(paymentType string) bool {
+	return paymentType == TypeUSDTTRC20 || paymentType == TypeUSDTERC20
+}
 
 // Order status constants shared across payment and service layers.
 const (
 	OrderStatusPending           = "PENDING"
+	OrderStatusPartiallyPaid     = "PARTIALLY_PAID"
+	OrderStatusReviewRequired    = "REVIEW_REQUIRED"
 	OrderStatusPaid              = "PAID"
 	OrderStatusRecharging        = "RECHARGING"
 	OrderStatusCompleted         = "COMPLETED"
@@ -86,6 +97,10 @@ func GetBasePaymentType(t string) string {
 		return TypeEasyPay
 	case t == TypeAirwallex:
 		return TypeAirwallex
+	case t == TypeUSDTTRC20:
+		return TypeUSDTTRC20
+	case t == TypeUSDTERC20:
+		return TypeUSDTERC20
 	case t == TypeStripe || t == TypeCard || t == TypeLink:
 		return TypeStripe
 	case len(t) >= len(TypeAlipay) && t[:len(TypeAlipay)] == TypeAlipay:
@@ -143,19 +158,34 @@ type WechatJSAPIPayload struct {
 	PaySign   string `json:"paySign,omitempty"`
 }
 
+type OnchainPaymentInfo struct {
+	Network        string    `json:"network"`
+	ChainID        uint64    `json:"chain_id"`
+	Token          string    `json:"token"`
+	TokenContract  string    `json:"token_contract"`
+	Address        string    `json:"address"`
+	Amount         string    `json:"amount"`
+	QRCode         string    `json:"qr_code"`
+	ReceivedAmount string    `json:"received_amount"`
+	PendingAmount  string    `json:"pending_amount"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	Status         string    `json:"status,omitempty"`
+}
+
 // CreatePaymentResponse is returned after successfully initiating a payment.
 type CreatePaymentResponse struct {
-	TradeNo      string                  // Third-party transaction ID
-	PayURL       string                  // H5 payment URL (alipay/wxpay)
-	QRCode       string                  // QR code content for scanning
-	ClientSecret string                  // Stripe PaymentIntent 客户端密钥
-	IntentID     string                  // 前端 SDK 需要的服务商支付意图 ID
-	Currency     string                  // 服务商支付币种
-	CountryCode  string                  // 服务商收银台国家/地区代码
-	PaymentEnv   string                  // 服务商前端环境标识
-	ResultType   CreatePaymentResultType // Typed result contract for frontend flows
-	OAuth        *WechatOAuthInfo        // WeChat OAuth bootstrap payload when required
-	JSAPI        *WechatJSAPIPayload     // WeChat JSAPI invocation payload when ready
+	TradeNo        string                  // Third-party transaction ID
+	PayURL         string                  // H5 payment URL (alipay/wxpay)
+	QRCode         string                  // QR code content for scanning
+	ClientSecret   string                  // Stripe PaymentIntent 客户端密钥
+	IntentID       string                  // 前端 SDK 需要的服务商支付意图 ID
+	Currency       string                  // 服务商支付币种
+	CountryCode    string                  // 服务商收银台国家/地区代码
+	PaymentEnv     string                  // 服务商前端环境标识
+	ResultType     CreatePaymentResultType // Typed result contract for frontend flows
+	OAuth          *WechatOAuthInfo        // WeChat OAuth bootstrap payload when required
+	JSAPI          *WechatJSAPIPayload     // WeChat JSAPI invocation payload when ready
+	OnchainPayment *OnchainPaymentInfo
 }
 
 // QueryOrderResponse describes the payment status from the upstream provider.
@@ -226,6 +256,10 @@ type Provider interface {
 	VerifyNotification(ctx context.Context, rawBody string, headers map[string]string) (*PaymentNotification, error)
 	// Refund requests a refund from the upstream provider.
 	Refund(ctx context.Context, req RefundRequest) (*RefundResponse, error)
+}
+
+type AvailabilityProvider interface {
+	Availability(ctx context.Context) error
 }
 
 // RefundQueryProvider extends Provider with refund status querying.

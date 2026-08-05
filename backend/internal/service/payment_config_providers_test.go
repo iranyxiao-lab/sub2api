@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -342,6 +343,39 @@ func TestCreateProviderInstanceAllowsVisibleMethodProvidersFromDifferentSources(
 		Enabled:        true,
 	})
 	require.NoError(t, err)
+}
+
+func TestCreateProviderInstanceSupportsUSDTTRC20PublicConfig(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+	svc := &PaymentConfigService{entClient: client}
+	instance, err := svc.CreateProviderInstance(ctx, CreateProviderInstanceRequest{
+		ProviderKey: payment.TypeUSDTTRC20,
+		Name:        "USDT (TRC20)",
+		Config: map[string]string{
+			"network":       "tron-mainnet",
+			"usdtContract":  "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+			"usdtDecimals":  "6",
+			"configVersion": "tron-config-v1",
+		},
+		SupportedTypes: []string{payment.TypeUSDTTRC20},
+		Enabled:        true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, payment.TypeUSDTTRC20, instance.ProviderKey)
+	require.Equal(t, payment.TypeUSDTTRC20, instance.SupportedTypes)
+
+	responses, err := svc.ListProviderInstancesWithConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, responses, 1)
+	require.Equal(t, "tron-mainnet", responses[0].Config["network"])
+	for _, forbidden := range []string{"private", "mnemonic", "seed", "xprv", "secret"} {
+		for key := range responses[0].Config {
+			require.NotContains(t, strings.ToLower(key), forbidden)
+		}
+	}
 }
 
 func TestUpdateProviderInstanceAllowsEnablingVisibleMethodProviderFromDifferentSource(t *testing.T) {
