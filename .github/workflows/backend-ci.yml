@@ -20,6 +20,29 @@ jobs:
           /bin/sh deploy/tests/docker-runtime-resources-test.sh
           /bin/sh deploy/test-caddyfile-cache.sh
 
+  edge-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test Cloudflare origin security scripts
+        run: |
+          /bin/bash deploy/tests/cloudflare-origin-guard-test.sh
+          /bin/bash deploy/tests/cloudflare-trusted-proxy-test.sh
+          /bin/sh deploy/tests/cloudflare-caddy-policy-test.sh
+          /bin/sh deploy/tests/docker-compose-security-test.sh
+      - name: Validate Caddy 2.6.2 configurations
+        run: |
+          docker run --rm \
+            -v "$PWD/deploy/cloudflare:/etc/sub2api-cloudflare:ro" \
+            caddy:2.6.2 caddy validate \
+            --config /etc/sub2api-cloudflare/Caddyfile.cloudflare \
+            --adapter caddyfile
+          docker run --rm \
+            -v "$PWD/deploy/cloudflare:/etc/sub2api-cloudflare:ro" \
+            caddy:2.6.2 caddy validate \
+            --config /etc/sub2api-cloudflare/Caddyfile.tunnel \
+            --adapter caddyfile
+
   test:
     runs-on: ubuntu-latest
     steps:

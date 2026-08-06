@@ -1,0 +1,27 @@
+[Unit]
+Description=Refresh the Sub2API Cloudflare origin allowlist
+Wants=network-online.target
+After=network-online.target
+Before=caddy.service
+
+[Service]
+Type=oneshot
+Environment=STATE_DIR=/var/lib/sub2api-origin-guard
+Environment=LOCK_DIR=/run/sub2api-origin-guard/lock
+ExecStart=/usr/local/sbin/sub2api-origin-guard service-refresh
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+StateDirectory=sub2api-origin-guard
+RuntimeDirectory=sub2api-origin-guard
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

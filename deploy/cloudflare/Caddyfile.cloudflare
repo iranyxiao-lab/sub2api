@@ -1,0 +1,59 @@
+{
+	servers {
+		max_header_size 64KB
+		timeouts {
+			read_header 10s
+			idle 2m
+		}
+	}
+}
+
+(sub2api_cloudflare_origin) {
+	request_body {
+		max_size 256MB
+	}
+
+	header Strict-Transport-Security "max-age=86400"
+
+	reverse_proxy 127.0.0.1:18082 {
+		header_up Host heytoken.net
+		header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+		header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Host heytoken.net
+		transport http {
+			keepalive 120s
+			keepalive_idle_conns 256
+			compression off
+		}
+	}
+
+	encode {
+		zstd
+		gzip 6
+		minimum_length 256
+		match {
+			header Content-Type text/css*
+			header Content-Type text/csv*
+			header Content-Type text/html*
+			header Content-Type text/javascript*
+			header Content-Type text/markdown*
+			header Content-Type text/plain*
+			header Content-Type text/xml*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type application/xml*
+			header Content-Type application/rss+xml*
+			header Content-Type image/svg+xml*
+		}
+	}
+}
+
+heytoken.net {
+	import sub2api_cloudflare_origin
+}
+
+http://:18081 {
+	bind 127.0.0.1
+	import sub2api_cloudflare_origin
+}

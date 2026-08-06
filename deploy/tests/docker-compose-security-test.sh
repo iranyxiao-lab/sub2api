@@ -32,6 +32,15 @@ check_application_security_opt() {
   fi
 }
 
+check_trusted_proxy_environment() {
+  file=$1
+  count=$(grep -Ec '^      - SERVER_TRUSTED_PROXIES=\$\{SERVER_TRUSTED_PROXIES:-\}$' "$file" || true)
+  if [ "$count" -ne 1 ]; then
+    printf '%s must pass SERVER_TRUSTED_PROXIES exactly once with a fail-closed empty default\n' "$file" >&2
+    exit 1
+  fi
+}
+
 for compose_file in \
   deploy/docker-compose.yml \
   deploy/docker-compose.local.yml \
@@ -39,6 +48,7 @@ for compose_file in \
   deploy/docker-compose.dev.yml
 do
   check_application_security_opt "$compose_file"
+  check_trusted_proxy_environment "$compose_file"
 done
 
 printf 'docker compose security test passed\n'

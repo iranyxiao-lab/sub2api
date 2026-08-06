@@ -207,3 +207,238 @@ cannot absorb volumetric attacks, TLS floods, bandwidth saturation, or a large
 distributed source set. Those require upstream network capacity, CDN/WAF
 filtering, provider firewall rules, and origin isolation. Avoid high-cardinality
 metrics or per-request database security logs during rejection storms.
+
+## heytoken.net Cloudflare origin isolation
+
+The production rollout has two explicit modes:
+
+1. **Proxied origin:** Cloudflare connects to public Caddy on TCP 80/443. The
+   host firewall permits only Cloudflare's published IPv4 and IPv6 ranges.
+2. **Tunnel-only origin:** cloudflared connects outbound, Caddy listens only
+   on 127.0.0.1:18081, and public TCP 80/443 is denied for every source.
+
+The first mode is an immediate containment measure and the rollback path. The
+second mode is the steady state. A single connector has several edge
+connections and systemd restart recovery, but it is not host-level high
+availability.
+
+Repository-managed files are under deploy/cloudflare/:
+
+| File | Purpose |
+| --- | --- |
+| origin-guard.sh | Validate, cache, and atomically apply Cloudflare nftables ranges |
+| sub2api-origin-guard.* | Restore the selected mode at boot and refresh every six hours |
+| Caddyfile.cloudflare | Public Cloudflare origin plus loopback canary origin |
+| Caddyfile.tunnel | Final loopback-only origin |
+| configure-trusted-proxy.sh | Persist the unique Docker gateway as an exact /32 |
+| install-cloudflared*.sh | Install cloudflared and its token without argv/env exposure |
+| switch-caddy-mode.sh | Validate, back up, reload, health-check, and auto-restore Caddy |
+| rollback-to-proxied-origin.sh | Restore the cached Cloudflare allowlist |
+
+### Required preflight record
+
+Before either phase, record these values in the private change record, not in
+the repository:
+
+- current proxied root A/AAAA records and TTL;
+- sha256sum /etc/caddy/Caddyfile;
+- sha256sum /opt/sub2api/docker-compose.yml;
+- current immutable application image tag or digest;
+- docker compose service state and application health;
+- timestamp and restore result of the latest application/PostgreSQL backup;
+- Tunnel ID after the Tunnel is created.
+
+Do not print docker compose config; interpolation can expose secrets.
+
+### Phase one: Cloudflare-only public origin
+
+Install the repository files on the origin, then run:
+
+~~~sh
+cd /path/to/repository/deploy/cloudflare
+sudo sh ./install-origin-guard.sh
+sudo sh ./switch-caddy-mode.sh cloudflare
+sudo sh ./configure-trusted-proxy.sh
+cd /opt/sub2api
+sudo docker compose -f docker-compose.yml up -d --no-deps --wait --wait-timeout 120 sub2api
+~~~
+
+configure-trusted-proxy.sh inspects the one running sub2api container. It
+aborts unless all attached networks yield one unique, valid IPv4 gateway. It
+then atomically writes SERVER_TRUSTED_PROXIES=<gateway>/32 to the mode-600
+production .env; it never prints the rest of that file.
+
+In the admin security settings, explicitly save both values and read them back:
+
+~~~json
+{
+  "api_key_acl_trust_forwarded_ip": false,
+  "forwarded_client_ip_headers": []
+}
+~~~
+
+With compatibility takeover disabled, Caddy overwrites X-Real-IP and
+X-Forwarded-For from Cloudflare's CF-Connecting-IP, while the application
+accepts those rewritten headers only from the exact Docker gateway. Rate
+limits, session binding, audit logs, and API-key IP ACLs therefore share the
+same trusted-proxy chain.
+
+The nftables script owns only inet sub2api_edge and TCP destination ports 80
+and 443. It does not alter SSH, Docker, PostgreSQL, or Redis rules. Downloads
+are fixed to Cloudflare's official ips-v4 and ips-v6 endpoints in the systemd
+unit. Empty, malformed, duplicate, undersized, oversized, failed downloads, or
+failed nft syntax checks leave the previous rules and cache active. The timer
+runs every six hours with up to 30 minutes of randomized delay.
+
+Verify from an external host, not from the origin itself:
+
+~~~sh
+curl --fail --show-error https://heytoken.net/health
+curl --resolve heytoken.net:443:ORIGIN_IPV4 https://heytoken.net/health
+curl -6 --resolve heytoken.net:443:ORIGIN_IPV6 https://heytoken.net/health
+~~~
+
+The domain request must pass; both direct-origin requests must time out or be
+rejected. Also send a normal request with a deliberately forged
+CF-Connecting-IP through Cloudflare and confirm the application records the
+actual visitor address, not the supplied value.
+
+### Phase two: remotely managed Tunnel
+
+Create a remotely managed Tunnel named heytoken-origin in Cloudflare. Add a
+temporary canary public hostname with:
+
+- service: http://127.0.0.1:18081;
+- HTTP Host Header: heytoken.net;
+- connector transport: default auto (QUIC first, HTTP/2 fallback).
+
+The phase-one Caddyfile already exposes the same application policy on
+127.0.0.1:18081, so the canary can run while the root hostname continues to
+use the proxied A record. The site address is written as `http://:18081` with
+an explicit `bind 127.0.0.1`; this keeps the configuration compatible with the
+production Caddy 2.6.2 parser while still preventing a public listener. Caddy
+also fixes the upstream Host to `heytoken.net`.
+
+Install cloudflared >= 2025.4.0 from Cloudflare's APT repository:
+
+~~~sh
+cd /path/to/repository/deploy/cloudflare
+sudo sh ./install-cloudflared.sh
+sudo sh ./install-cloudflared-token.sh < /secure/temporary/heytoken.token
+sudo systemctl enable --now cloudflared
+sudo systemctl --no-pager status cloudflared
+curl --fail --silent http://127.0.0.1:20241/metrics >/dev/null
+~~~
+
+The temporary token file must be mode 0600 and deleted after installation. The
+installed token is /etc/cloudflared/heytoken.token, owned by the cloudflared
+service account with mode 0400. Never put it in a command-line argument,
+Compose environment, shell history, repository, support bundle, or log.
+The systemd command deliberately omits a `--protocol` argument: current
+cloudflared releases use their default automatic transport selection (QUIC
+first, with HTTP/2 fallback), and cloudflared 2026.7.3 no longer accepts the
+older `--protocol auto` spelling.
+
+Test the canary hostname for /health, login and 2FA, the admin UI, /v1/models,
+one controlled SSE request, WebSocket upgrade, and a bounded upload. Confirm
+the application still records the real visitor IP. Restart both Caddy and
+cloudflared once during canary validation and confirm automatic recovery.
+
+After canary approval, replace the root proxied A record with the Tunnel public
+hostname route. Keep the old A value in the private rollback record. Observe
+at least two previous DNS TTLs and 30 additional minutes while checking health,
+5xx rate, latency, SSE disconnects, uploads, and connector metrics.
+
+Finalize only after the observation window:
+
+~~~sh
+sudo sh /path/to/repository/deploy/cloudflare/switch-caddy-mode.sh tunnel
+sudo /usr/local/sbin/sub2api-origin-guard deny-all
+sudo systemctl disable --now sub2api-origin-guard.timer
+~~~
+
+Leave sub2api-origin-guard.service enabled. Its boot-time service-refresh
+command records the selected mode and restores the unconditional 80/443 denial
+after reboot without downloading or applying a Cloudflare allowlist. The
+disabled timer and cached lists remain available for rollback.
+
+### Tunnel token rotation and failure
+
+For rotation, generate or rotate the token in Cloudflare, immediately install
+the new value through install-cloudflared-token.sh standard input, restart
+cloudflared, and verify active edge connections plus canary/root health. Treat
+the rotation as a short reconnect window and never log either token.
+
+For a connector-only incident, inspect redacted cloudflared journal output,
+local Caddy health, DNS resolution, and the loopback metrics endpoint. Do not
+repeatedly restart a failing connector.
+
+For a full rollback, use this order:
+
+1. Restore the old proxied root A/AAAA record in Cloudflare.
+2. Run rollback-to-proxied-origin.sh to restore the cached Cloudflare
+   allowlist and periodic updates.
+3. Run switch-caddy-mode.sh cloudflare.
+4. Verify the domain through Cloudflare and direct-origin rejection.
+5. Only then stop or disable cloudflared.
+
+Never remove the nftables table or open 80/443 to the world as a temporary
+rollback step.
+
+When the origin IP changes in Tunnel mode, no public DNS change is needed.
+Update the private rollback record and provider firewall. If rollback remains
+required, pre-stage the new proxied A/AAAA value while keeping the Cloudflare
+allowlist active on the new host.
+
+### Cloudflare edge controls
+
+Apply edge controls after canary validation:
+
+- SSL/TLS mode **Full (strict)**, TLS 1.3 enabled, minimum TLS 1.2;
+- **Always Use HTTPS** and Certificate Transparency monitoring enabled;
+- DNSSEC enabled, with the Cloudflare DS record installed at the registrar and
+  the signed chain verified externally;
+- HSTS initially emitted by the repository Caddy templates as
+  `max-age=86400`, without includeSubDomains or preload. The Cloudflare Free
+  dashboard currently exposes one month as its smallest non-zero HSTS value,
+  so it cannot represent the safer one-day rollout. After seven stable days,
+  remove the Caddy HSTS header in the same change that enables Cloudflare HSTS
+  at 31536000; do not leave two independently managed HSTS headers;
+- enable includeSubDomains only after every subdomain permanently supports
+  HTTPS; do not enable preload yet;
+- do not enable Authenticated Origin Pulls for the Tunnel origin.
+
+The exact target rule below requires at least a Business plan because it uses
+the request method, a 60-second counting window, and a 600-second mitigation
+timeout:
+
+~~~text
+http.request.method eq "POST" and http.request.uri.path in {
+  "/api/v1/auth/register"
+  "/api/v1/auth/login"
+  "/api/v1/auth/login/2fa"
+  "/api/v1/auth/passkey/login/begin"
+  "/api/v1/auth/passkey/login/finish"
+  "/api/v1/auth/send-verify-code"
+  "/api/v1/auth/oauth/pending/send-verify-code"
+  "/api/v1/auth/forgot-password"
+  "/api/v1/auth/reset-password"
+}
+~~~
+
+Count by visitor IP, allow 20 requests per 60 seconds, and block for 10
+minutes. The application's Redis-backed fail-closed endpoint limits remain the
+second layer.
+
+On the Free plan, use the one available rule with only the URI-path portion of
+the expression above, count by visitor IP, allow 5 requests per 10 seconds,
+and block for 10 seconds. Free supports only path matching, IP counting, a
+10-second counting period, and a 10-second mitigation timeout; it cannot match
+the POST method or reproduce 20 requests per minute with a 10-minute block.
+Keep the application Redis limits as the authoritative second layer, and do
+not report the Free fallback as equivalent to the target rule.
+
+Final acceptance requires TLS 1.0/1.1 rejection, TLS 1.2/1.3 success, HSTS and
+DNSSEC verification, failed direct IPv4 and IPv6 origin access, forged
+CF-Connecting-IP rejection, and successful login, API, SSE, WebSocket, upload,
+and admin workflows.
