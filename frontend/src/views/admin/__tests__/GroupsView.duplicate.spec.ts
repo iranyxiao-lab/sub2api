@@ -170,6 +170,7 @@ describe('GroupsView duplicate action', () => {
       getLiveCapability,
       getUsageSummary,
       getCapacitySummary,
+      getLiveCapability,
       showSuccess,
       showError
     ]) {

@@ -147,3 +147,5 @@ output/
 .codegraph
 openspec
 generated-images
+# Vitest / Vite cache at repo root
+.vite/
