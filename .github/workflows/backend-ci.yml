@@ -30,6 +30,7 @@ jobs:
           /bin/bash deploy/tests/cloudflare-origin-guard-test.sh
           /bin/bash deploy/tests/cloudflare-trusted-proxy-test.sh
           /bin/sh deploy/tests/cloudflare-caddy-policy-test.sh
+          /bin/sh deploy/tests/cloudflared-service-test.sh
           /bin/sh deploy/tests/docker-compose-security-test.sh
       - name: Validate Caddy 2.6.2 configurations
         run: |

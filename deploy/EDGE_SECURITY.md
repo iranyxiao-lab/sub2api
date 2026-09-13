@@ -310,7 +310,8 @@ temporary canary public hostname with:
 
 - service: http://127.0.0.1:18081;
 - HTTP Host Header: heytoken.net;
-- connector transport: default auto (QUIC first, HTTP/2 fallback).
+- connector transport: HTTP/2 over TCP 7844, forced with the documented
+  `TUNNEL_TRANSPORT_PROTOCOL=http2` environment variable.
 
 The phase-one Caddyfile already exposes the same application policy on
 127.0.0.1:18081, so the canary can run while the root hostname continues to
@@ -334,10 +335,16 @@ The temporary token file must be mode 0600 and deleted after installation. The
 installed token is /etc/cloudflared/heytoken.token, owned by the cloudflared
 service account with mode 0400. Never put it in a command-line argument,
 Compose environment, shell history, repository, support bundle, or log.
-The systemd command deliberately omits a `--protocol` argument: current
-cloudflared releases use their default automatic transport selection (QUIC
-first, with HTTP/2 fallback), and cloudflared 2026.7.3 no longer accepts the
-older `--protocol auto` spelling.
+The systemd command deliberately omits a `--protocol` argument because
+cloudflared 2026.7.3 no longer exposes that CLI option. The service instead
+sets the documented `TUNNEL_TRANSPORT_PROTOCOL=http2` environment variable.
+This production-specific override avoids a failure mode observed with automatic
+selection: three QUIC connections remained healthy while one IPv6 QUIC
+connection repeatedly failed its control stream and never triggered a global
+HTTP/2 fallback. TCP connectivity checks and a temporary connector must show
+four stable HTTP/2 connections before enabling the override. To return to
+automatic selection after the network path is repaired, remove the Environment
+line, reload systemd, and restart only cloudflared.
 
 Test the canary hostname for /health, login and 2FA, the admin UI, /v1/models,
 one controlled SSE request, WebSocket upgrade, and a bounded upload. Confirm
@@ -372,6 +379,12 @@ the rotation as a short reconnect window and never log either token.
 For a connector-only incident, inspect redacted cloudflared journal output,
 local Caddy health, DNS resolution, and the loopback metrics endpoint. Do not
 repeatedly restart a failing connector.
+
+If `cloudflared_tunnel_ha_connections` remains below four and the journal shows
+one QUIC connection repeatedly failing while TCP 7844 passes the startup
+connectivity checks, keep the HTTP/2 override in place. This changes only the
+connector-to-Cloudflare transport; browser-to-Cloudflare HTTP/2, HTTP/3, SSE,
+and WebSocket behavior is unaffected.
 
 For a full rollback, use this order:
 

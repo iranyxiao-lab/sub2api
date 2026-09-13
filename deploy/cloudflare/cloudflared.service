@@ -7,6 +7,7 @@ After=network-online.target caddy.service
 Type=notify
 User=cloudflared
 Group=cloudflared
+Environment=TUNNEL_TRANSPORT_PROTOCOL=http2
 ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:20241 run --token-file /etc/cloudflared/heytoken.token
 Restart=on-failure
 RestartSec=5s
