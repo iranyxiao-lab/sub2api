@@ -744,6 +744,7 @@ export default {
         providerStripe: 'Stripe',
         providerAirwallex: 'Airwallex',
 		providerUSDTTRC20: 'USDT (TRC20)',
+		providerUSDTERC20: 'USDT (ERC20)',
         typeDisabled: 'type disabled',
         enableTypesFirst: 'Enable at least one payment type above first',
         easypayRedirect: 'Redirect',

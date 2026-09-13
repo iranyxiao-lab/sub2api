@@ -784,6 +784,24 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(wrapper.text()).not.toContain("支付来源");
   });
 
+  it("exposes both self-hosted USDT networks in payment settings", async () => {
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openPaymentTab(wrapper);
+
+    expect(wrapper.text()).toContain("payment.methods.usdt_trc20");
+    expect(wrapper.text()).toContain("payment.methods.usdt_erc20");
+
+    const dialog = wrapper.findComponent({ name: "PaymentProviderDialog" });
+    expect(dialog.props("allKeyOptions")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ value: "usdt_trc20" }),
+        expect.objectContaining({ value: "usdt_erc20" }),
+      ]),
+    );
+  });
+
   it("shows valid passkey RP configuration and persists the sign-in toggle", async () => {
     const wrapper = mountView();
 
