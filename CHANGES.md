@@ -1,5 +1,45 @@
 # 更新记录
 
+## 2026-09-17 上游同步
+
+- 同步范围：`07bf8b92f` 至 `efe9aab1e`（上游版本 `0.2.0` 至 `0.2.5`，共 476 个提交，其中 204 个合并提交）。
+- 同步方式：执行 `git fetch origin --prune --tags` 后，用默认三方合并（`ort`，未使用 `-X ours`）将 `origin/main` 纳入本地 `main`，真实冲突逐个人工解决并统一以本地业务实现为准；同步前保留基线标签 `sync-baseline-20260917` 与备份分支 `backup/pre-upstream-sync-20260917`，本地领先的 9 个业务提交（链上 USDT、Cloudflare 边界加固等）全部保留。
+- 冲突共 4 个文件：`backend/go.mod`、`backend/go.sum` 与两个 `GroupsView` 前端测试。依赖冲突保留上游升级后的版本（`go-redis v9.22.0`、`x/crypto v0.55.0`、`grpc v1.83.2`、`otel v1.44.0` 等），再重新引入本地链上依赖（`go-ethereum`、`btcsuite/btcd`、`go-tpm`），最后由 `go mod tidy` 统一整理模块图；前端测试冲突按上游重命名（`getModelsListCandidates` → `getModelAllowlistCandidates`）采用上游版本，同时保留本地新增的 `getLiveCapability` 模拟。
+- 上游变更规模：857 个文件，新增 51,179 行、删除 4,906 行；纳入生成代码后相对本地业务基线共 894 个文件，新增 54,200 行、删除 5,189 行。
+- 生成代码按仓库既有流程重建：Ent 用隔离生成器重建到 `backend/entgen-output` 并同步到 `backend/ent`（334 个生成文件与 schema 逐一哈希比对一致），Wire 重新生成 `backend/cmd/server/wire_gen.go`（重生成结果与合并结果无差异）。
+
+### 新增与增强
+
+- 新增分组级模型白名单强制（`model_allowlist`）与 Codex 模型清单配置，覆盖网关模型列表、WebSocket 与调度校验，并补齐管理员界面和测试。
+- 新增 MiniMax 平台与 OpenCode 平台（Zen、GO 账号类型），包含账号类型、模型映射、前端选择项和导入探测。
+- 新增订阅批量操作、API Key 批量编辑和用户批量删除，完善对应权限、事务处理与前端交互。
+- 增强 OpenAI/Codex 能力：OAuth 生图改走原生 Codex Images、WebSocket 连接池常驻读循环应答上游 ping、按 Codex 线程派生 WS 执行作用域、GPT-6 Astra 与 ultrafast service tier、Anthropic reasoning effort 计费控制。
+- 完善 Antigravity（Gemini 3.7/3.8 Flash、OAuth token 缓存按账号隔离）、Ollama Cloud 用量窗口异步限流重置和 Grok 媒体资格控制。
+- 增强运营与前端能力：站点类型三态开关、自定义页面按钮隐藏与拖拽、支付帮助文本 Markdown 渲染、Channel Monitor V2 用户排行、简单模式基础账号分组、账户到期预设、OpenAI 周成本估算和兑换码分页。
+- 部署侧新增 Apple 网络子网可选配置，并为长时间 LLM 生成流补充上游 HTTP/2 PING 保活。
+
+### 修复与安全
+
+- 修复 DeepSeek Responses 并行工具输出、Antigravity 归因元数据与 SSE 空行、OpenAI 清单校验与响应亲和恢复、Gemini finishReason 计费口径等问题。
+- 修复认证与会话：TOTP 设码同步、注册密码确认、临时故障下会话保留、OAuth 促销码透传，以及暂停账号继续刷新令牌。
+- 修复支付链路：退款余额提示按请求金额计算、支付配置请求竞态、切换订单状态时重置页面、非法金额输入后的文本恢复。
+- 修复权限与配额：拒绝负数平台限额、API Key 重置配额后状态同步、代理凭据可显式清空、批量生图访问缓存按用户隔离。
+- 依赖安全：将 `google.golang.org/grpc` 升级到 `v1.83.2`，修复 govulncheck 报告的两条安全公告。
+
+### 数据库、配置与部署
+
+- 新增迁移 `234`（渠道最大推理强度倍率）、`235`/`236`（分组模型白名单及修复）、`237`（MiniMax 平台）、`238`（OpenCode GO 平台、清理未配置平台限额），并补充对应迁移回归测试；与本地链上业务迁移 `192_add_onchain_usdt_foundation.sql` 并存。
+- 后端版本同步至 `0.2.5`；`deploy/` 下的配置样例、Compose 文件与文档随上游更新，本地 Cloudflare 边界加固（origin guard、cloudflared HTTP/2 传输）保持不变。
+
+### 同步后校验
+
+- `go build ./...`、`go vet ./...`、`go mod verify`、`go mod tidy -diff` 均通过，Ent 与 Wire 生成代码已确认与当前 schema/装配一致。
+- `go test ./...`：除 `internal/repository` 的 3 个 `TestPgDumper*` 用例外全部通过。这三个用例来自上游，依赖 `sh` 命令，在 Windows 上缺少 `sh` 可执行文件而失败；文件与 `origin/main` 完全一致，属本机环境限制。
+- `go test -tags=unit ./...`：仓库包同样受上述 `sh` 限制；另外 `internal/service` 的 `TestOllamaProbeCallback_StaleLongDoesNotOverrideNewShort` 在纯上游 `origin/main` 检出上同样失败，为上游既有问题，与本次合并无关。
+- `go test -tags=integration ./migrations/... ./internal/repository/...`：迁移包通过，链上相关集成用例（`TestOnchain*`）全部通过，其余仅上述 `sh` 用例失败。
+- 前端通过 `vue-tsc --noEmit`、`eslint`、i18n 语言包完整性检查；`vitest run` 298 个测试文件、2249 个用例全部通过。
+- 本地修复：本地链上测试的 `requireApplicationErrorReason` 与上游 unit 测试助手同名，导致 `go test -tags=unit` 无法编译（该问题在合并前基线即已存在），已将本地链上测试统一改名为 `requireOnchainErrorReason`。
+
 ## 2026-08-11 上游同步
 
 - 同步范围：`a19c9f8d8` 至 `0f73203e3`（上游版本 `0.1.171` 至 `0.1.173`，共 198 个提交）。

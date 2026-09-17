@@ -134,7 +134,7 @@ func TestCreateTRONOrderRejectsUnavailableConfigAndExcessPrecisionBeforeAllocati
 	t.Run("health unavailable", func(t *testing.T) {
 		svc, client, user, repo, selection := newTRONOrderTestService(t, errors.New("node unavailable"))
 		_, err := createTRONOrderForTest(ctx, svc, user, selection, 10, "10")
-		requireApplicationErrorReason(t, err, onchain.TRONRechargeUnavailable)
+		requireOnchainErrorReason(t, err, onchain.TRONRechargeUnavailable)
 		require.Zero(t, repo.allocationCalls)
 		count, countErr := client.PaymentOrder.Query().Count(ctx)
 		require.NoError(t, countErr)
@@ -144,7 +144,7 @@ func TestCreateTRONOrderRejectsUnavailableConfigAndExcessPrecisionBeforeAllocati
 	t.Run("excess precision", func(t *testing.T) {
 		svc, _, user, repo, selection := newTRONOrderTestService(t, nil)
 		_, err := createTRONOrderForTest(ctx, svc, user, selection, 10, "10.0000001")
-		requireApplicationErrorReason(t, err, "INVALID_AMOUNT")
+		requireOnchainErrorReason(t, err, "INVALID_AMOUNT")
 		require.Zero(t, repo.allocationCalls)
 	})
 
@@ -152,7 +152,7 @@ func TestCreateTRONOrderRejectsUnavailableConfigAndExcessPrecisionBeforeAllocati
 		svc, _, user, repo, selection := newTRONOrderTestService(t, nil)
 		selection.Config["network"] = string(onchain.NetworkEthereumMainnet)
 		_, err := createTRONOrderForTest(ctx, svc, user, selection, 10, "10")
-		requireApplicationErrorReason(t, err, "PAYMENT_PROVIDER_MISCONFIGURED")
+		requireOnchainErrorReason(t, err, "PAYMENT_PROVIDER_MISCONFIGURED")
 		require.Zero(t, repo.allocationCalls)
 	})
 }
@@ -164,7 +164,7 @@ func TestCreateOrderRejectsTRONSubscriptionBeforeLoadingConfigOrAllocatingAddres
 		OrderType:   payment.OrderTypeSubscription,
 		PlanID:      1,
 	})
-	requireApplicationErrorReason(t, err, "ONCHAIN_BALANCE_RECHARGE_ONLY")
+	requireOnchainErrorReason(t, err, "ONCHAIN_BALANCE_RECHARGE_ONLY")
 }
 
 func TestCreateTRONOrderBypassesGlobalDailyLimitButKeepsPendingLimit(t *testing.T) {
@@ -187,7 +187,7 @@ func TestCreateTRONOrderBypassesGlobalDailyLimitButKeepsPendingLimit(t *testing.
 	third, err := createTRONOrderForTest(ctx, svc, user, selection, 100, "100")
 	require.NoError(t, err)
 	_, err = createTRONOrderForTest(ctx, svc, user, selection, 100, "100")
-	requireApplicationErrorReason(t, err, "TOO_MANY_PENDING")
+	requireOnchainErrorReason(t, err, "TOO_MANY_PENDING")
 	require.NotZero(t, third.OrderID)
 }
 
@@ -244,7 +244,7 @@ func validTRONOrderTestSelection() *payment.InstanceSelection {
 	}
 }
 
-func requireApplicationErrorReason(t *testing.T, err error, reason string) {
+func requireOnchainErrorReason(t *testing.T, err error, reason string) {
 	t.Helper()
 	require.Error(t, err)
 	appErr := new(infraerrors.ApplicationError)

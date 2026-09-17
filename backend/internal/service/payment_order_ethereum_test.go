@@ -119,7 +119,7 @@ func TestCreateOrderRejectsEthereumSubscriptionBeforeLoadingConfigOrAllocatingAd
 	_, err := svc.CreateOrder(context.Background(), CreateOrderRequest{
 		PaymentType: payment.TypeUSDTERC20, OrderType: payment.OrderTypeSubscription, PlanID: 1,
 	})
-	requireApplicationErrorReason(t, err, "ONCHAIN_BALANCE_RECHARGE_ONLY")
+	requireOnchainErrorReason(t, err, "ONCHAIN_BALANCE_RECHARGE_ONLY")
 }
 
 func TestCreateEthereumOrderRejectsExcessPrecisionBeforeAllocatingAddress(t *testing.T) {
@@ -127,7 +127,7 @@ func TestCreateEthereumOrderRejectsExcessPrecisionBeforeAllocatingAddress(t *tes
 	svc, client, user, repo, selection := newEthereumOrderTestService(t, false)
 
 	_, err := createEthereumOrderForTest(ctx, svc, user, selection, 10, "10.0000001")
-	requireApplicationErrorReason(t, err, "INVALID_AMOUNT")
+	requireOnchainErrorReason(t, err, "INVALID_AMOUNT")
 	require.Zero(t, repo.allocationCalls)
 	require.Zero(t, repo.intentCalls)
 
@@ -153,15 +153,15 @@ func TestCreateEthereumOrderBypassesDailyLimitButKeepsExplicitProtections(t *tes
 	_, err = createEthereumOrderForTest(ctx, svc, user, selection, 100, "100")
 	require.NoError(t, err)
 	_, err = createEthereumOrderForTest(ctx, svc, user, selection, 100, "100")
-	requireApplicationErrorReason(t, err, "TOO_MANY_PENDING")
+	requireOnchainErrorReason(t, err, "TOO_MANY_PENDING")
 
 	_, err = createEthereumOrderForTest(ctx, svc, user, selection, 9, "9")
-	requireApplicationErrorReason(t, err, "INVALID_AMOUNT")
+	requireOnchainErrorReason(t, err, "INVALID_AMOUNT")
 	svc.ethereumOrderHealthCheck = func(context.Context) (onchain.EthereumStartupReport, error) {
 		return onchain.EthereumStartupReport{}, errors.New("finalized unavailable")
 	}
 	_, err = createEthereumOrderForTest(ctx, svc, user, selection, 100, "100")
-	requireApplicationErrorReason(t, err, onchain.EthereumRechargeUnavailable)
+	requireOnchainErrorReason(t, err, onchain.EthereumRechargeUnavailable)
 }
 
 type ethereumCursorHealthReaderStub struct {

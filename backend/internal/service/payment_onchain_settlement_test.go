@@ -233,7 +233,7 @@ func TestConfirmOnchainDepositRejectsNonOnchainPaymentType(t *testing.T) {
 	require.NoError(t, err)
 
 	err = (&PaymentService{entClient: client}).ConfirmOnchainDeposit(ctx, intent.ID)
-	requireApplicationErrorReason(t, err, "ONCHAIN_ORDER_MISMATCH")
+	requireOnchainErrorReason(t, err, "ONCHAIN_ORDER_MISMATCH")
 	loadedIntent, loadErr := client.OnchainPaymentIntent.Get(ctx, intent.ID)
 	require.NoError(t, loadErr)
 	require.Equal(t, string(onchain.IntentSettlementDue), loadedIntent.Status)
