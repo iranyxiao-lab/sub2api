@@ -1,3 +1,9 @@
+## 2026-09-22 上游同步
+
+- 同步范围：本地 `main` 从上游 `origin/main` 的 `v0.2.5` 更新至 `v0.2.7`，纳入上游 132 个提交；本地既有 10 个业务提交全部保留。
+- 同步方式：先执行 `git fetch origin --prune`，创建备份分支 `backup/pre-upstream-sync-20260922-210349`，再使用 Git 默认三方合并；唯一冲突位于 `backend/internal/config/config.go`，已合并保留链上默认配置并纳入上游 simple mode 默认分组配置。
+- 主要更新：插件运行时与 Plugin API 扩展、内容审核引擎与提醒、推理预算及多平台计费、OpenAI Referral/图片余额能力、Seedance 接口、OAuth 与代理故障转移增强，以及对应的后端迁移、前端管理界面和测试覆盖。
+- 当前版本：`backend/cmd/server/VERSION` 为 `0.2.7`。合并提交：`bfaacd32f`。
 # 更新记录
 
 ## 2026-09-17 上游同步
@@ -186,3 +192,4 @@
 - 修正 Compose 示例镜像地址，补充 GitHub token、客户端 IP、可信代理和异步生图配置文档。
 - 更新 Kyren Topup 支付提供商说明及相关中英文支付文档。
 - 新增组合模型路由、分组推理策略、移动支付宝和分组鉴权缓存相关数据库迁移及组合分组使用文档。
+
