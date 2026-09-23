@@ -17,6 +17,7 @@
             @create="showCreate = true"
           >
             <template #after>
+              <button class="btn btn-secondary" @click="openIntelligenceBank" :title="t('admin.intelligence.bank')"><Icon name="sparkles" size="sm" /> <span class="hidden md:inline">{{ t('admin.intelligence.bank') }}</span></button>
               <!-- Auto Refresh Dropdown -->
               <div class="relative" ref="autoRefreshDropdownRef">
                 <button
@@ -456,7 +457,8 @@
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
+    <IntelligencePanel :show="showIntelligencePanel" :account-id="intelligenceAcc?.id ?? null" :model-options="intelligenceModelOptions" @close="closeIntelligencePanel" @open-bank="openIntelligenceBank" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @intelligence="handleIntelligence" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -513,6 +515,7 @@ import ReAuthAccountModal from '@/components/admin/account/ReAuthAccountModal.vu
 import AccountTestModal from '@/components/admin/account/AccountTestModal.vue'
 import AccountStatsModal from '@/components/admin/account/AccountStatsModal.vue'
 import ScheduledTestsPanel from '@/components/admin/account/ScheduledTestsPanel.vue'
+import IntelligencePanel from '@/components/admin/account/IntelligencePanel.vue'
 import type { SelectOption } from '@/components/common/Select.vue'
 import AccountStatusIndicator from '@/components/account/AccountStatusIndicator.vue'
 import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
@@ -611,6 +614,9 @@ const reAuthAcc = ref<Account | null>(null)
 const testingAcc = ref<Account | null>(null)
 const statsAcc = ref<Account | null>(null)
 const showSchedulePanel = ref(false)
+const showIntelligencePanel = ref(false)
+const intelligenceAcc = ref<Account | null>(null)
+const intelligenceModelOptions = ref<SelectOption[]>([])
 const scheduleAcc = ref<Account | null>(null)
 const scheduleModelOptions = ref<SelectOption[]>([])
 const togglingSchedulable = ref<number | null>(null)
@@ -1368,6 +1374,7 @@ const isAnyModalOpen = computed(() => {
     showTest.value ||
     showStats.value ||
     showSchedulePanel.value ||
+    showIntelligencePanel.value ||
     showErrorPassthrough.value ||
     showTLSFingerprintProfiles.value
   )
@@ -2334,6 +2341,17 @@ const handleSchedule = async (a: Account) => {
   }
 }
 const closeSchedulePanel = () => { showSchedulePanel.value = false; scheduleAcc.value = null; scheduleModelOptions.value = [] }
+const openIntelligenceBank = () => { showIntelligencePanel.value = false; intelligenceAcc.value = null; intelligenceModelOptions.value = []; showIntelligencePanel.value = true }
+const closeIntelligencePanel = () => { showIntelligencePanel.value = false; intelligenceAcc.value = null; intelligenceModelOptions.value = [] }
+const handleIntelligence = async (a: Account) => {
+  intelligenceAcc.value = a
+  intelligenceModelOptions.value = []
+  showIntelligencePanel.value = true
+  try {
+    const models = await adminAPI.accounts.getAvailableModels(a.id)
+    if (intelligenceAcc.value?.id === a.id) intelligenceModelOptions.value = models.map((m: ClaudeModel) => ({ value: m.id, label: m.display_name || m.id }))
+  } catch { intelligenceModelOptions.value = [] }
+}
 const handleReAuth = (a: Account) => { reAuthAcc.value = a; showReAuth.value = true }
 const duplicatingAccountIDs = new Set<number>()
 const handleDuplicateAccount = async (a: Account) => {

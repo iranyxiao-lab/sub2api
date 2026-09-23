@@ -2402,6 +2402,9 @@ export interface ScheduledTestPlan {
   enabled: boolean
   max_results: number
   auto_recover: boolean
+  test_kind: 'connectivity' | 'intelligence'
+  question_ids: number[]
+  custom_prompt: string
   last_run_at: string | null
   next_run_at: string | null
   created_at: string
@@ -2414,6 +2417,14 @@ export interface ScheduledTestResult {
   status: string
   response_text: string
   error_message: string
+  question_snapshot?: IntelligenceQuestion
+  prompt_snapshot?: string
+  model_snapshot?: string
+  score: number | null
+  grade_status?: 'correct' | 'incorrect' | 'pending' | 'reviewed'
+  review_note?: string
+  reviewed_by?: number
+  reviewed_at?: string
   latency_ms: number
   started_at: string
   finished_at: string
@@ -2427,6 +2438,9 @@ export interface CreateScheduledTestPlanRequest {
   enabled?: boolean
   max_results?: number
   auto_recover?: boolean
+  test_kind?: 'connectivity' | 'intelligence'
+  question_ids?: number[]
+  custom_prompt?: string
 }
 
 export interface UpdateScheduledTestPlanRequest {
@@ -2435,6 +2449,19 @@ export interface UpdateScheduledTestPlanRequest {
   enabled?: boolean
   max_results?: number
   auto_recover?: boolean
+  question_ids?: number[]
+  custom_prompt?: string
+}
+
+export interface IntelligenceQuestion {
+  id: number
+  title: string
+  kind: 'choice' | 'short_answer' | 'open'
+  prompt: string
+  choices: string[]
+  answer: string
+  rubric: string
+  built_in: boolean
 }
 
 // Payment types

@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
 )
 
@@ -12,23 +14,29 @@ var scheduledTestCronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom 
 
 // ScheduledTestService provides CRUD operations for scheduled test plans and results.
 type ScheduledTestService struct {
-	planRepo   ScheduledTestPlanRepository
-	resultRepo ScheduledTestResultRepository
+	planRepo    ScheduledTestPlanRepository
+	resultRepo  ScheduledTestResultRepository
+	accountTest *AccountTestService
 }
 
 // NewScheduledTestService creates a new ScheduledTestService.
 func NewScheduledTestService(
 	planRepo ScheduledTestPlanRepository,
 	resultRepo ScheduledTestResultRepository,
+	accountTest *AccountTestService,
 ) *ScheduledTestService {
 	return &ScheduledTestService{
-		planRepo:   planRepo,
-		resultRepo: resultRepo,
+		planRepo:    planRepo,
+		resultRepo:  resultRepo,
+		accountTest: accountTest,
 	}
 }
 
 // CreatePlan validates the cron expression, computes next_run_at, and persists the plan.
 func (s *ScheduledTestService) CreatePlan(ctx context.Context, plan *ScheduledTestPlan) (*ScheduledTestPlan, error) {
+	if err := s.validatePlan(ctx, plan); err != nil {
+		return nil, err
+	}
 	nextRun, err := computeNextRun(plan.CronExpression, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("invalid cron expression: %w", err)
@@ -54,6 +62,9 @@ func (s *ScheduledTestService) ListPlansByAccount(ctx context.Context, accountID
 
 // UpdatePlan validates cron and updates the plan.
 func (s *ScheduledTestService) UpdatePlan(ctx context.Context, plan *ScheduledTestPlan) (*ScheduledTestPlan, error) {
+	if err := s.validatePlan(ctx, plan); err != nil {
+		return nil, err
+	}
 	nextRun, err := computeNextRun(plan.CronExpression, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("invalid cron expression: %w", err)
@@ -61,6 +72,184 @@ func (s *ScheduledTestService) UpdatePlan(ctx context.Context, plan *ScheduledTe
 	plan.NextRunAt = &nextRun
 
 	return s.planRepo.Update(ctx, plan)
+}
+
+func (s *ScheduledTestService) validatePlan(ctx context.Context, plan *ScheduledTestPlan) error {
+	if plan.TestKind == "" {
+		plan.TestKind = "connectivity"
+	}
+	if plan.TestKind != "connectivity" && plan.TestKind != "intelligence" {
+		return fmt.Errorf("invalid test kind")
+	}
+	if len(plan.ModelID) > 100 || len(plan.CustomPrompt) > 4000 {
+		return fmt.Errorf("model or prompt too long")
+	}
+	if plan.TestKind == "connectivity" {
+		plan.QuestionIDs = nil
+		plan.CustomPrompt = ""
+		return nil
+	}
+	if plan.MaxResults < 0 || plan.MaxResults > 200 {
+		return fmt.Errorf("max_results must be between 1 and 200")
+	}
+	if plan.ModelID == "" || len(plan.QuestionIDs) == 0 || len(plan.QuestionIDs) > 50 {
+		return fmt.Errorf("select a model and 1-50 questions")
+	}
+	if isOpenAIImageModel(plan.ModelID) || isGrokImageGenerationModel(plan.ModelID) || isGrokVideoGenerationModel(plan.ModelID) || isImageGenerationModel(plan.ModelID) {
+		return fmt.Errorf("select a text model for intelligence tests")
+	}
+	account, err := s.accountTest.accountRepo.GetByID(ctx, plan.AccountID)
+	if err != nil {
+		return fmt.Errorf("account not found: %w", err)
+	}
+	if account.IsSyntheticUITest() {
+		return fmt.Errorf("synthetic accounts cannot run intelligence tests")
+	}
+	if plan.AutoRecover {
+		return fmt.Errorf("intelligence tests cannot auto-recover accounts")
+	}
+	seen := make(map[int64]bool)
+	for _, id := range plan.QuestionIDs {
+		if id < 1 || seen[id] {
+			return fmt.Errorf("invalid or duplicate question")
+		}
+		seen[id] = true
+		if _, err := s.planRepo.GetQuestion(ctx, id); err != nil {
+			return fmt.Errorf("question %d not found: %w", id, err)
+		}
+	}
+	sched, err := scheduledTestCronParser.Parse(plan.CronExpression)
+	if err != nil {
+		return err
+	}
+	next := sched.Next(time.Now())
+	if sched.Next(next).Sub(next) < 15*time.Minute {
+		return fmt.Errorf("intelligence tests require at least 15 minutes between runs")
+	}
+	return nil
+}
+
+func (s *ScheduledTestService) ListQuestions(ctx context.Context) ([]*IntelligenceQuestion, error) {
+	return s.planRepo.ListQuestions(ctx)
+}
+
+func (s *ScheduledTestService) SaveQuestion(ctx context.Context, q *IntelligenceQuestion) (*IntelligenceQuestion, error) {
+	q.Title, q.Prompt, q.Answer = strings.TrimSpace(q.Title), strings.TrimSpace(q.Prompt), strings.TrimSpace(q.Answer)
+	if q.BuiltIn || q.Title == "" || q.Prompt == "" || len(q.Title) > 160 || len(q.Prompt) > 8000 || len(q.Answer) > 1000 || len(q.Rubric) > 4000 {
+		return nil, fmt.Errorf("invalid question fields")
+	}
+	switch q.Kind {
+	case "choice":
+		if len(q.Choices) < 2 || len(q.Choices) > 4 || len(q.Answer) != 1 || !strings.Contains("ABCD"[:len(q.Choices)], strings.ToUpper(q.Answer)) {
+			return nil, fmt.Errorf("choice answer must match an option")
+		}
+		for _, choice := range q.Choices {
+			if strings.TrimSpace(choice) == "" || len(choice) > 500 {
+				return nil, fmt.Errorf("invalid choice")
+			}
+		}
+		q.Answer = strings.ToUpper(q.Answer)
+	case "short_answer":
+		if q.Answer == "" {
+			return nil, fmt.Errorf("answer required")
+		}
+		q.Choices = []string{}
+	case "open":
+		q.Answer = ""
+		q.Choices = []string{}
+	default:
+		return nil, fmt.Errorf("invalid question kind")
+	}
+	return s.planRepo.SaveQuestion(ctx, q)
+}
+
+func (s *ScheduledTestService) DeleteQuestion(ctx context.Context, id int64) error {
+	return s.planRepo.DeleteQuestion(ctx, id)
+}
+
+func (s *ScheduledTestService) Review(ctx context.Context, planID, resultID, reviewerID int64, score int, note string) (*ScheduledTestResult, error) {
+	if score < 0 || score > 100 || len(note) > 2000 || reviewerID < 1 {
+		return nil, fmt.Errorf("invalid review")
+	}
+	return s.resultRepo.Review(ctx, planID, resultID, reviewerID, score, note)
+}
+
+func (s *ScheduledTestService) RunIntelligence(ctx context.Context, plan *ScheduledTestPlan) (*ScheduledTestResult, error) {
+	if plan.TestKind != "intelligence" || len(plan.QuestionIDs) == 0 {
+		return nil, fmt.Errorf("invalid intelligence plan")
+	}
+	cursor, err := s.planRepo.AdvanceQuestion(ctx, plan.ID)
+	if err != nil {
+		return nil, err
+	}
+	question, err := s.planRepo.GetQuestion(ctx, plan.QuestionIDs[int(cursor%int64(len(plan.QuestionIDs)))])
+	if err != nil {
+		return nil, err
+	}
+	prompt := strings.TrimSpace(plan.CustomPrompt + "\n\n" + question.Prompt)
+	if question.Kind == "choice" {
+		for i, option := range question.Choices {
+			prompt += fmt.Sprintf("\n%c. %s", 'A'+i, option)
+		}
+		prompt += "\nReply with only the option letter."
+	}
+	result, err := s.accountTest.RunTestBackground(ctx, plan.AccountID, plan.ModelID, prompt)
+	if err != nil {
+		now := time.Now()
+		result = &ScheduledTestResult{Status: "failed", ErrorMessage: err.Error(), StartedAt: now, FinishedAt: now}
+	}
+	result.QuestionSnapshot = question
+	result.PromptSnapshot = prompt
+	result.ModelSnapshot = plan.ModelID
+	if result.Status == "success" {
+		result.GradeStatus, result.Score = gradeIntelligence(question, result.ResponseText)
+	}
+	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := s.SaveResult(saveCtx, plan.ID, plan.MaxResults, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *ScheduledTestService) RunIntelligenceNow(ctx context.Context, plan *ScheduledTestPlan) (*ScheduledTestResult, error) {
+	token := uuid.NewString()
+	claimed, err := s.planRepo.TryClaim(ctx, plan.ID, time.Now().Add(3*time.Minute), token, false)
+	if err != nil {
+		return nil, err
+	}
+	if !claimed {
+		return nil, fmt.Errorf("test already running")
+	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.planRepo.ReleaseClaim(releaseCtx, plan.ID, token)
+	}()
+	return s.RunIntelligence(ctx, plan)
+}
+
+func gradeIntelligence(q *IntelligenceQuestion, response string) (string, *int) {
+	if q.Kind == "open" || strings.TrimSpace(response) == "" {
+		return "pending", nil
+	}
+	got := strings.ToLower(strings.Join(strings.Fields(response), " "))
+	want := strings.ToLower(strings.Join(strings.Fields(q.Answer), " "))
+	if q.Kind == "choice" {
+		got = strings.ToUpper(strings.TrimSpace(response))
+		want = strings.ToUpper(q.Answer)
+		if len(got) != 1 || !strings.Contains("ABCD"[:len(q.Choices)], got) {
+			return "pending", nil
+		}
+	}
+	score := 0
+	if got == want {
+		score = 100
+	}
+	if score == 100 {
+		return "correct", &score
+	}
+	return "incorrect", &score
 }
 
 // DeletePlan removes a plan and its results (via CASCADE).

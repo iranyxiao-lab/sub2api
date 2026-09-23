@@ -1,4 +1,13 @@
 export default {
+    intelligence: {
+      title: '智力测试', bank: '题库', addQuestion: '添加题目', questionTitle: '标题', kind: '题型',
+      choice: '单选题', shortAnswer: '短答案', open: '开放题', prompt: '题目提示词', choices: '选项（每行一个）',
+      answer: '标准答案', rubric: '人工复核标准', customPrompt: '账号专属提示词', selectQuestions: '选择题目',
+      manageBank: '管理题库', selectModel: '选择模型', runNow: '立即测试', history: '历史结果', accuracy: '正确率',
+      correct: '正确', incorrect: '错误', pending: '待复核', details: '详情', preview: '静态 HTML 预览',
+      score: '分数', reviewNote: '复核备注', review: '保存复核', confirmDelete: '删除这道题目？',
+      loadFailed: '加载测试失败', saveFailed: '保存失败', runFailed: '测试失败'
+    },
     scheduledTests: {
       title: '定时测试',
       addPlan: '添加计划',

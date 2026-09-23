@@ -8,7 +8,8 @@ import type {
   ScheduledTestPlan,
   ScheduledTestResult,
   CreateScheduledTestPlanRequest,
-  UpdateScheduledTestPlanRequest
+  UpdateScheduledTestPlanRequest,
+  IntelligenceQuestion
 } from '@/types'
 
 /**
@@ -79,7 +80,29 @@ export const scheduledTestsAPI = {
   create,
   update,
   delete: deletePlan,
-  listResults
+  listResults,
+  async listQuestions(): Promise<IntelligenceQuestion[]> {
+    const { data } = await apiClient.get<IntelligenceQuestion[]>('/admin/intelligence-questions')
+    return data ?? []
+  },
+  async saveQuestion(question: Partial<IntelligenceQuestion>): Promise<IntelligenceQuestion> {
+    const url = question.id ? `/admin/intelligence-questions/${question.id}` : '/admin/intelligence-questions'
+    const { data } = question.id
+      ? await apiClient.put<IntelligenceQuestion>(url, question)
+      : await apiClient.post<IntelligenceQuestion>(url, question)
+    return data
+  },
+  async deleteQuestion(id: number): Promise<void> {
+    await apiClient.delete(`/admin/intelligence-questions/${id}`)
+  },
+  async runNow(planId: number): Promise<ScheduledTestResult> {
+    const { data } = await apiClient.post<ScheduledTestResult>(`/admin/scheduled-test-plans/${planId}/run`)
+    return data
+  },
+  async review(planId: number, resultId: number, score: number, note: string): Promise<ScheduledTestResult> {
+    const { data } = await apiClient.put<ScheduledTestResult>(`/admin/scheduled-test-plans/${planId}/results/${resultId}/review`, { score, note })
+    return data
+  }
 }
 
 export default scheduledTestsAPI
