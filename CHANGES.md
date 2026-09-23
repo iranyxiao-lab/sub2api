@@ -1,3 +1,15 @@
+## 2026-09-23 上游同步
+
+- 同步范围：本地 `main` 从上游 `origin/main` 的 `20a94fbb5` 更新，纳入上游 43 个提交；本地 12 个业务提交与未跟踪工作目录均保留。
+- 同步方式：执行 `git fetch origin --prune --tags`，创建备份分支 `backup/pre-upstream-sync-20260923-091305`，使用默认 `ort` 三方合并；无冲突。
+- 主要更新：修复 Antigravity/Gemini schema 清洗（`prefixItems`、`const`、数组 `items` 和 union 递归）、上游响应及请求体生命周期、流式终止与心跳处理、Grok 冷却期配额查询、调度 RPM 缓存，以及 GPT-5.5 Responses Lite 兼容；新增相应后端回归测试。
+- 前端修复对话框滚动锁、日期范围取消、图片读取顺序、Select 键盘焦点与搜索高亮、公告竞态、代理过期边界和 Antigravity URL 规范化，并新增 8 个 Vitest 测试文件。
+- 合并统计：43 个文件，新增 2,409 行、删除 95 行；版本保持 `0.2.7`。
+
+### 同步后校验
+
+- 通过：前端本次新增/受影响的 8 个 Vitest 文件，38 个用例全部通过；后端 `internal/pkg/antigravity` 与 `internal/pkg/apicompat` 测试通过。
+- 已知环境限制：后端 `internal/repository` 全包测试中 3 个既有 `pg_dump` 用例因 Windows 环境缺少 `sh` 失败；该失败发生在未涉及本次变更的备份测试路径。
 ## 2026-09-22 上游同步
 
 - 同步范围：本地 `main` 从上游 `origin/main` 的 `v0.2.5` 更新至 `v0.2.7`，纳入上游 132 个提交；本地既有 10 个业务提交全部保留。
@@ -192,4 +204,5 @@
 - 修正 Compose 示例镜像地址，补充 GitHub token、客户端 IP、可信代理和异步生图配置文档。
 - 更新 Kyren Topup 支付提供商说明及相关中英文支付文档。
 - 新增组合模型路由、分组推理策略、移动支付宝和分组鉴权缓存相关数据库迁移及组合分组使用文档。
+
 
