@@ -98,10 +98,6 @@ export const scheduledTestsAPI = {
   async runNow(planId: number): Promise<ScheduledTestResult> {
     const { data } = await apiClient.post<ScheduledTestResult>(`/admin/scheduled-test-plans/${planId}/run`)
     return data
-  },
-  async review(planId: number, resultId: number, score: number, note: string): Promise<ScheduledTestResult> {
-    const { data } = await apiClient.put<ScheduledTestResult>(`/admin/scheduled-test-plans/${planId}/results/${resultId}/review`, { score, note })
-    return data
   }
 }
 

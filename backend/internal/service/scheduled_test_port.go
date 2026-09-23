@@ -34,11 +34,6 @@ type ScheduledTestResult struct {
 	QuestionSnapshot *IntelligenceQuestion `json:"question_snapshot,omitempty"`
 	PromptSnapshot   string                `json:"prompt_snapshot,omitempty"`
 	ModelSnapshot    string                `json:"model_snapshot,omitempty"`
-	Score            *int                  `json:"score"`
-	GradeStatus      string                `json:"grade_status,omitempty"`
-	ReviewNote       string                `json:"review_note,omitempty"`
-	ReviewedBy       *int64                `json:"reviewed_by,omitempty"`
-	ReviewedAt       *time.Time            `json:"reviewed_at,omitempty"`
 	LatencyMs        int64                 `json:"latency_ms"`
 	StartedAt        time.Time             `json:"started_at"`
 	FinishedAt       time.Time             `json:"finished_at"`
@@ -64,14 +59,10 @@ type ScheduledTestPlanRepository interface {
 }
 
 type IntelligenceQuestion struct {
-	ID      int64    `json:"id"`
-	Title   string   `json:"title"`
-	Kind    string   `json:"kind"`
-	Prompt  string   `json:"prompt"`
-	Choices []string `json:"choices"`
-	Answer  string   `json:"answer"`
-	Rubric  string   `json:"rubric"`
-	BuiltIn bool     `json:"built_in"`
+	ID      int64  `json:"id"`
+	Title   string `json:"title"`
+	Prompt  string `json:"prompt"`
+	BuiltIn bool   `json:"built_in"`
 }
 
 // ScheduledTestResultRepository defines the data access interface for test results.
@@ -79,5 +70,4 @@ type ScheduledTestResultRepository interface {
 	Create(ctx context.Context, result *ScheduledTestResult) (*ScheduledTestResult, error)
 	ListByPlanID(ctx context.Context, planID int64, limit int) ([]*ScheduledTestResult, error)
 	PruneOldResults(ctx context.Context, planID int64, keepCount int) error
-	Review(ctx context.Context, planID, resultID, reviewerID int64, score int, note string) (*ScheduledTestResult, error)
 }

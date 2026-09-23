@@ -2420,11 +2420,6 @@ export interface ScheduledTestResult {
   question_snapshot?: IntelligenceQuestion
   prompt_snapshot?: string
   model_snapshot?: string
-  score: number | null
-  grade_status?: 'correct' | 'incorrect' | 'pending' | 'reviewed'
-  review_note?: string
-  reviewed_by?: number
-  reviewed_at?: string
   latency_ms: number
   started_at: string
   finished_at: string
@@ -2456,11 +2451,7 @@ export interface UpdateScheduledTestPlanRequest {
 export interface IntelligenceQuestion {
   id: number
   title: string
-  kind: 'choice' | 'short_answer' | 'open'
   prompt: string
-  choices: string[]
-  answer: string
-  rubric: string
   built_in: boolean
 }
 

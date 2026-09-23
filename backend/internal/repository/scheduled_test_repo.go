@@ -20,8 +20,7 @@ const planColumns = `id, account_id, model_id, cron_expression, enabled, max_res
     last_run_at, next_run_at, created_at, updated_at, test_kind, question_ids, custom_prompt, question_cursor`
 
 const resultColumns = `id, plan_id, status, response_text, error_message, latency_ms, started_at,
-    finished_at, created_at, question_snapshot, prompt_snapshot, model_snapshot, score,
-    grade_status, review_note, reviewed_by, reviewed_at`
+    finished_at, created_at, question_snapshot, prompt_snapshot, model_snapshot`
 
 func NewScheduledTestPlanRepository(db *sql.DB) service.ScheduledTestPlanRepository {
 	return &scheduledTestPlanRepository{db: db}
@@ -108,11 +107,11 @@ func NewScheduledTestResultRepository(db *sql.DB) service.ScheduledTestResultRep
 func (r *scheduledTestResultRepository) Create(ctx context.Context, result *service.ScheduledTestResult) (*service.ScheduledTestResult, error) {
 	row := r.db.QueryRowContext(ctx, `
 		INSERT INTO scheduled_test_results (plan_id, status, response_text, error_message, latency_ms, started_at, finished_at,
-		    question_snapshot, prompt_snapshot, model_snapshot, score, grade_status, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+		    question_snapshot, prompt_snapshot, model_snapshot, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
 		RETURNING `+resultColumns+`
 	`, result.PlanID, result.Status, result.ResponseText, result.ErrorMessage, result.LatencyMs, result.StartedAt, result.FinishedAt,
-		questionJSON(result.QuestionSnapshot), result.PromptSnapshot, result.ModelSnapshot, result.Score, nullableGrade(result.GradeStatus))
+		questionJSON(result.QuestionSnapshot), result.PromptSnapshot, result.ModelSnapshot)
 
 	out := &service.ScheduledTestResult{}
 	if err := scanResult(row, out); err != nil {
@@ -214,18 +213,13 @@ func (r *scheduledTestPlanRepository) AdvanceQuestion(ctx context.Context, id in
 
 func scanQuestion(row scannable) (*service.IntelligenceQuestion, error) {
 	q := &service.IntelligenceQuestion{}
-	var choices []byte
-	err := row.Scan(&q.ID, &q.Title, &q.Kind, &q.Prompt, &choices, &q.Answer, &q.Rubric, &q.BuiltIn)
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(choices, &q.Choices); err != nil {
+	if err := row.Scan(&q.ID, &q.Title, &q.Prompt, &q.BuiltIn); err != nil {
 		return nil, err
 	}
 	return q, nil
 }
 
-const questionColumns = `id, title, kind, prompt, choices, answer, rubric, built_in`
+const questionColumns = `id, title, prompt, built_in`
 
 func (r *scheduledTestPlanRepository) ListQuestions(ctx context.Context) ([]*service.IntelligenceQuestion, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT `+questionColumns+` FROM intelligence_questions ORDER BY built_in DESC, id`)
@@ -249,19 +243,14 @@ func (r *scheduledTestPlanRepository) GetQuestion(ctx context.Context, id int64)
 }
 
 func (r *scheduledTestPlanRepository) SaveQuestion(ctx context.Context, q *service.IntelligenceQuestion) (*service.IntelligenceQuestion, error) {
-	choices, err := json.Marshal(q.Choices)
-	if err != nil {
-		return nil, err
-	}
 	if q.ID == 0 {
-		return scanQuestion(r.db.QueryRowContext(ctx, `INSERT INTO intelligence_questions (title, kind, prompt, choices, answer, rubric)
-			VALUES ($1,$2,$3,$4,$5,$6) RETURNING `+questionColumns,
-			q.Title, q.Kind, q.Prompt, choices, q.Answer, q.Rubric))
+		return scanQuestion(r.db.QueryRowContext(ctx, `INSERT INTO intelligence_questions (title, kind, prompt)
+			VALUES ($1,'open',$2) RETURNING `+questionColumns, q.Title, q.Prompt))
 	}
 	return scanQuestion(r.db.QueryRowContext(ctx, `UPDATE intelligence_questions
-		SET title=$2, kind=$3, prompt=$4, choices=$5, answer=$6, rubric=$7, updated_at=NOW()
+		SET title=$2, kind='open', prompt=$3, choices='[]'::jsonb, answer='', rubric='', updated_at=NOW()
 		WHERE id=$1 AND NOT built_in RETURNING `+questionColumns,
-		q.ID, q.Title, q.Kind, q.Prompt, choices, q.Answer, q.Rubric))
+		q.ID, q.Title, q.Prompt))
 }
 
 func (r *scheduledTestPlanRepository) DeleteQuestion(ctx context.Context, id int64) error {
@@ -288,39 +277,16 @@ func questionJSON(q *service.IntelligenceQuestion) any {
 	return b
 }
 
-func nullableGrade(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
-}
-
 func scanResult(row scannable, out *service.ScheduledTestResult) error {
 	var snapshot []byte
-	var grade sql.NullString
 	err := row.Scan(&out.ID, &out.PlanID, &out.Status, &out.ResponseText, &out.ErrorMessage,
 		&out.LatencyMs, &out.StartedAt, &out.FinishedAt, &out.CreatedAt, &snapshot,
-		&out.PromptSnapshot, &out.ModelSnapshot, &out.Score, &grade, &out.ReviewNote, &out.ReviewedBy, &out.ReviewedAt)
+		&out.PromptSnapshot, &out.ModelSnapshot)
 	if err != nil {
 		return err
-	}
-	if grade.Valid {
-		out.GradeStatus = grade.String
 	}
 	if len(snapshot) > 0 {
 		return json.Unmarshal(snapshot, &out.QuestionSnapshot)
 	}
 	return nil
-}
-
-func (r *scheduledTestResultRepository) Review(ctx context.Context, planID, resultID, reviewerID int64, score int, note string) (*service.ScheduledTestResult, error) {
-	row := r.db.QueryRowContext(ctx, `UPDATE scheduled_test_results SET score=$3, grade_status='reviewed', review_note=$4,
-		reviewed_by=$5, reviewed_at=NOW() WHERE id=$2 AND plan_id=$1 AND status='success'
-		AND (question_snapshot->>'kind' = 'open' OR grade_status = 'pending') RETURNING `+resultColumns,
-		planID, resultID, score, note, reviewerID)
-	out := &service.ScheduledTestResult{}
-	if err := scanResult(row, out); err != nil {
-		return nil, err
-	}
-	return out, nil
 }

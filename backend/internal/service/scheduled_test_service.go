@@ -134,44 +134,15 @@ func (s *ScheduledTestService) ListQuestions(ctx context.Context) ([]*Intelligen
 }
 
 func (s *ScheduledTestService) SaveQuestion(ctx context.Context, q *IntelligenceQuestion) (*IntelligenceQuestion, error) {
-	q.Title, q.Prompt, q.Answer = strings.TrimSpace(q.Title), strings.TrimSpace(q.Prompt), strings.TrimSpace(q.Answer)
-	if q.BuiltIn || q.Title == "" || q.Prompt == "" || len(q.Title) > 160 || len(q.Prompt) > 8000 || len(q.Answer) > 1000 || len(q.Rubric) > 4000 {
+	q.Title, q.Prompt = strings.TrimSpace(q.Title), strings.TrimSpace(q.Prompt)
+	if q.BuiltIn || q.Title == "" || q.Prompt == "" || len(q.Title) > 160 || len(q.Prompt) > 8000 {
 		return nil, fmt.Errorf("invalid question fields")
-	}
-	switch q.Kind {
-	case "choice":
-		if len(q.Choices) < 2 || len(q.Choices) > 4 || len(q.Answer) != 1 || !strings.Contains("ABCD"[:len(q.Choices)], strings.ToUpper(q.Answer)) {
-			return nil, fmt.Errorf("choice answer must match an option")
-		}
-		for _, choice := range q.Choices {
-			if strings.TrimSpace(choice) == "" || len(choice) > 500 {
-				return nil, fmt.Errorf("invalid choice")
-			}
-		}
-		q.Answer = strings.ToUpper(q.Answer)
-	case "short_answer":
-		if q.Answer == "" {
-			return nil, fmt.Errorf("answer required")
-		}
-		q.Choices = []string{}
-	case "open":
-		q.Answer = ""
-		q.Choices = []string{}
-	default:
-		return nil, fmt.Errorf("invalid question kind")
 	}
 	return s.planRepo.SaveQuestion(ctx, q)
 }
 
 func (s *ScheduledTestService) DeleteQuestion(ctx context.Context, id int64) error {
 	return s.planRepo.DeleteQuestion(ctx, id)
-}
-
-func (s *ScheduledTestService) Review(ctx context.Context, planID, resultID, reviewerID int64, score int, note string) (*ScheduledTestResult, error) {
-	if score < 0 || score > 100 || len(note) > 2000 || reviewerID < 1 {
-		return nil, fmt.Errorf("invalid review")
-	}
-	return s.resultRepo.Review(ctx, planID, resultID, reviewerID, score, note)
 }
 
 func (s *ScheduledTestService) RunIntelligence(ctx context.Context, plan *ScheduledTestPlan) (*ScheduledTestResult, error) {
@@ -187,12 +158,6 @@ func (s *ScheduledTestService) RunIntelligence(ctx context.Context, plan *Schedu
 		return nil, err
 	}
 	prompt := strings.TrimSpace(plan.CustomPrompt + "\n\n" + question.Prompt)
-	if question.Kind == "choice" {
-		for i, option := range question.Choices {
-			prompt += fmt.Sprintf("\n%c. %s", 'A'+i, option)
-		}
-		prompt += "\nReply with only the option letter."
-	}
 	result, err := s.accountTest.RunTestBackground(ctx, plan.AccountID, plan.ModelID, prompt)
 	if err != nil {
 		now := time.Now()
@@ -201,9 +166,6 @@ func (s *ScheduledTestService) RunIntelligence(ctx context.Context, plan *Schedu
 	result.QuestionSnapshot = question
 	result.PromptSnapshot = prompt
 	result.ModelSnapshot = plan.ModelID
-	if result.Status == "success" {
-		result.GradeStatus, result.Score = gradeIntelligence(question, result.ResponseText)
-	}
 	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err := s.SaveResult(saveCtx, plan.ID, plan.MaxResults, result); err != nil {
@@ -227,29 +189,6 @@ func (s *ScheduledTestService) RunIntelligenceNow(ctx context.Context, plan *Sch
 		_ = s.planRepo.ReleaseClaim(releaseCtx, plan.ID, token)
 	}()
 	return s.RunIntelligence(ctx, plan)
-}
-
-func gradeIntelligence(q *IntelligenceQuestion, response string) (string, *int) {
-	if q.Kind == "open" || strings.TrimSpace(response) == "" {
-		return "pending", nil
-	}
-	got := strings.ToLower(strings.Join(strings.Fields(response), " "))
-	want := strings.ToLower(strings.Join(strings.Fields(q.Answer), " "))
-	if q.Kind == "choice" {
-		got = strings.ToUpper(strings.TrimSpace(response))
-		want = strings.ToUpper(q.Answer)
-		if len(got) != 1 || !strings.Contains("ABCD"[:len(q.Choices)], got) {
-			return "pending", nil
-		}
-	}
-	score := 0
-	if got == want {
-		score = 100
-	}
-	if score == 100 {
-		return "correct", &score
-	}
-	return "incorrect", &score
 }
 
 // DeletePlan removes a plan and its results (via CASCADE).

@@ -725,7 +725,6 @@ func registerScheduledTestRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		plans.DELETE("/:id", h.Admin.ScheduledTest.Delete)
 		plans.GET("/:id/results", h.Admin.ScheduledTest.ListResults)
 		plans.POST("/:id/run", h.Admin.ScheduledTest.RunNow)
-		plans.PUT("/:id/results/:result_id/review", h.Admin.ScheduledTest.Review)
 	}
 	questions := admin.Group("/intelligence-questions")
 	questions.GET("", h.Admin.ScheduledTest.ListQuestions)

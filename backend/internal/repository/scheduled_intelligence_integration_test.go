@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestIntelligencePlanQuestionResultAndReviewRoundTrip(t *testing.T) {
+func TestIntelligencePlanPromptAndResultRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	account := mustCreateAccount(t, integrationEntClient, &service.Account{
 		Name: "intelligence-roundtrip", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
@@ -20,9 +21,15 @@ func TestIntelligencePlanQuestionResultAndReviewRoundTrip(t *testing.T) {
 	plans := NewScheduledTestPlanRepository(integrationDB)
 	results := NewScheduledTestResultRepository(integrationDB)
 	question, err := plans.SaveQuestion(ctx, &service.IntelligenceQuestion{
-		Title: "HTML task", Kind: "open", Prompt: "Create a table", Choices: []string{}, Rubric: "Readable",
+		Title: "HTML task", Prompt: "Create a table",
 	})
 	require.NoError(t, err)
+	var kind, answer string
+	var choices []byte
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT kind, choices, answer FROM intelligence_questions WHERE id=$1`, question.ID).Scan(&kind, &choices, &answer))
+	require.Equal(t, "open", kind)
+	require.JSONEq(t, `[]`, string(choices))
+	require.Empty(t, answer)
 	t.Cleanup(func() {
 		_ = integrationEntClient.Account.DeleteOneID(account.ID).Exec(context.Background())
 		_ = plans.DeleteQuestion(context.Background(), question.ID)
@@ -65,23 +72,40 @@ func TestIntelligencePlanQuestionResultAndReviewRoundTrip(t *testing.T) {
 	result, err := results.Create(ctx, &service.ScheduledTestResult{
 		PlanID: plan.ID, Status: "success", ResponseText: "<html><table></table></html>",
 		QuestionSnapshot: question, PromptSnapshot: question.Prompt, ModelSnapshot: plan.ModelID,
-		GradeStatus: "pending", StartedAt: now, FinishedAt: now,
+		StartedAt: now, FinishedAt: now,
 	})
 	require.NoError(t, err)
-	result, err = results.Review(ctx, plan.ID, result.ID, account.ID, 85, "Readable table")
-	require.NoError(t, err)
-	require.Equal(t, "reviewed", result.GradeStatus)
-	require.Equal(t, 85, *result.Score)
 	require.Equal(t, "Create a table", result.QuestionSnapshot.Prompt)
-	choice := &service.IntelligenceQuestion{ID: question.ID, Title: "Ambiguous choice", Kind: "choice", Prompt: "Pick A or B", Choices: []string{"first", "second"}, Answer: "A"}
-	pending, err := results.Create(ctx, &service.ScheduledTestResult{
-		PlanID: plan.ID, Status: "success", ResponseText: "I think A", QuestionSnapshot: choice,
-		GradeStatus: "pending", StartedAt: now, FinishedAt: now,
-	})
+	require.Equal(t, "<html><table></table></html>", result.ResponseText)
+	var score *int
+	var grade *string
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT score, grade_status FROM scheduled_test_results WHERE id=$1`, result.ID).Scan(&score, &grade))
+	require.Nil(t, score)
+	require.Nil(t, grade)
+	// Existing scored results and choice questions remain in storage, but their
+	// obsolete answer and grading fields are not returned by the new API.
+	_, err = integrationDB.ExecContext(ctx, `UPDATE scheduled_test_results
+		SET score=85, grade_status='reviewed', question_snapshot=$2::jsonb WHERE id=$1`, result.ID,
+		`{"id":1,"title":"Legacy","kind":"choice","prompt":"Pick one","choices":["Yes","No"],"answer":"B","built_in":false}`)
 	require.NoError(t, err)
-	pending, err = results.Review(ctx, plan.ID, pending.ID, account.ID, 100, "Accepted after review")
+	history, err := results.ListByPlanID(ctx, plan.ID, 20)
 	require.NoError(t, err)
-	require.Equal(t, "reviewed", pending.GradeStatus)
-	_, err = results.Review(ctx, plan.ID, pending.ID, account.ID, 0, "Cannot override")
-	require.Error(t, err)
+	require.Len(t, history, 1)
+	encoded, err := json.Marshal(history[0])
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "answer")
+	require.NotContains(t, string(encoded), "choices")
+	require.NotContains(t, string(encoded), "score")
+	require.Equal(t, "Pick one", history[0].QuestionSnapshot.Prompt)
+	_, err = integrationDB.ExecContext(ctx, `UPDATE intelligence_questions SET kind='choice', choices='["Yes","No"]'::jsonb, answer='B' WHERE id=$1`, question.ID)
+	require.NoError(t, err)
+	question, err = plans.GetQuestion(ctx, question.ID)
+	require.NoError(t, err)
+	question.Prompt = "Revised prompt"
+	_, err = plans.SaveQuestion(ctx, question)
+	require.NoError(t, err)
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT kind, choices, answer FROM intelligence_questions WHERE id=$1`, question.ID).Scan(&kind, &choices, &answer))
+	require.Equal(t, "open", kind)
+	require.JSONEq(t, `[]`, string(choices))
+	require.Empty(t, answer)
 }

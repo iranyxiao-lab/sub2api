@@ -1,11 +1,9 @@
 export default {
     intelligence: {
-      title: 'Intelligence test', bank: 'Question bank', addQuestion: 'Add question', questionTitle: 'Title', kind: 'Question type',
-      choice: 'Multiple choice', shortAnswer: 'Short answer', open: 'Open response', prompt: 'Question prompt', choices: 'Options (one per line)',
-      answer: 'Expected answer', rubric: 'Review criteria', customPrompt: 'Account-specific instructions', selectQuestions: 'Questions',
-      manageBank: 'Manage question bank', selectModel: 'Select model', runNow: 'Run now', history: 'History', accuracy: 'Correct rate',
-      correct: 'Correct', incorrect: 'Incorrect', pending: 'Pending review', details: 'Details', preview: 'Static HTML preview',
-      score: 'Score', reviewNote: 'Review notes', review: 'Save review', confirmDelete: 'Delete this question?',
+      title: 'Intelligence test', bank: 'Question bank', addQuestion: 'Add question', questionTitle: 'Title', prompt: 'Question prompt',
+      customPrompt: 'Account-specific instructions', selectQuestions: 'Questions',
+      manageBank: 'Manage question bank', selectModel: 'Select model', runNow: 'Run now', history: 'History',
+      details: 'Details', preview: 'Static HTML preview', confirmDelete: 'Delete this question?',
       loadFailed: 'Failed to load tests', saveFailed: 'Failed to save', runFailed: 'Test failed'
     },
     scheduledTests: {

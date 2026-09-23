@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -244,42 +243,6 @@ func (h *ScheduledTestHandler) RunNow(c *gin.Context) {
 	result, err := h.scheduledTestSvc.RunIntelligenceNow(ctx, plan)
 	if err != nil {
 		response.InternalError(c, err.Error())
-		return
-	}
-	c.JSON(http.StatusOK, result)
-}
-
-func (h *ScheduledTestHandler) Review(c *gin.Context) {
-	planID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil || planID < 1 {
-		response.BadRequest(c, "invalid plan id")
-		return
-	}
-	resultID, err := strconv.ParseInt(c.Param("result_id"), 10, 64)
-	if err != nil || resultID < 1 {
-		response.BadRequest(c, "invalid result id")
-		return
-	}
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok {
-		response.BadRequest(c, "missing reviewer")
-		return
-	}
-	var req struct {
-		Score *int   `json:"score" binding:"required"`
-		Note  string `json:"note"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-	if req.Score == nil {
-		response.BadRequest(c, "score required")
-		return
-	}
-	result, err := h.scheduledTestSvc.Review(c.Request.Context(), planID, resultID, subject.UserID, *req.Score, req.Note)
-	if err != nil {
-		response.BadRequest(c, err.Error())
 		return
 	}
 	c.JSON(http.StatusOK, result)
