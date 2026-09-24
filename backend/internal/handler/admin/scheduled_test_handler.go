@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -151,6 +152,10 @@ func (h *ScheduledTestHandler) Delete(c *gin.Context) {
 	}
 
 	if err := h.scheduledTestSvc.DeletePlan(c.Request.Context(), planID); err != nil {
+		if errors.Is(err, service.ErrIntelligenceRunActive) {
+			c.JSON(http.StatusConflict, gin.H{"message": "Cannot delete a plan with an active run"})
+			return
+		}
 		response.InternalError(c, err.Error())
 		return
 	}

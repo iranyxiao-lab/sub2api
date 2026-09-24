@@ -21,9 +21,11 @@ type ScheduledTestRunnerService struct {
 	rateLimitSvc   *RateLimitService
 	cfg            *config.Config
 
-	cron      *cron.Cron
-	startOnce sync.Once
-	stopOnce  sync.Once
+	cron         *cron.Cron
+	startOnce    sync.Once
+	stopOnce     sync.Once
+	workerCancel context.CancelFunc
+	workerDone   chan struct{}
 }
 
 // NewScheduledTestRunnerService creates a new runner.
@@ -49,6 +51,10 @@ func (s *ScheduledTestRunnerService) Start() {
 		return
 	}
 	s.startOnce.Do(func() {
+		workerCtx, cancel := context.WithCancel(context.Background())
+		s.workerCancel = cancel
+		s.workerDone = make(chan struct{})
+		go func() { defer close(s.workerDone); s.scheduledSvc.runIntelligenceWorker(workerCtx) }()
 		loc := time.Local
 		if s.cfg != nil {
 			if parsed, err := time.LoadLocation(s.cfg.Timezone); err == nil && parsed != nil {
@@ -74,6 +80,13 @@ func (s *ScheduledTestRunnerService) Stop() {
 		return
 	}
 	s.stopOnce.Do(func() {
+		if s.workerCancel != nil {
+			s.workerCancel()
+			select {
+			case <-s.workerDone:
+			case <-time.After(6 * time.Second):
+			}
+		}
 		if s.cron != nil {
 			ctx := s.cron.Stop()
 			select {
@@ -121,6 +134,16 @@ func (s *ScheduledTestRunnerService) runScheduled() {
 }
 
 func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *ScheduledTestPlan) {
+	if plan.TestKind == "intelligence" {
+		key := "scheduled:"
+		if plan.NextRunAt != nil {
+			key += plan.NextRunAt.UTC().Format(time.RFC3339Nano)
+		}
+		if _, err := s.scheduledSvc.EnqueueRun(ctx, plan, key, "scheduled"); err != nil && err != ErrIntelligenceNotDue && err != ErrIntelligenceRunActive {
+			logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d enqueue failed: %v", plan.ID, err)
+		}
+		return
+	}
 	token := uuid.NewString()
 	claimed, err := s.planRepo.TryClaim(ctx, plan.ID, time.Now().Add(10*time.Minute), token, true)
 	if err != nil || !claimed {
@@ -131,13 +154,6 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 		defer cancel()
 		_ = s.planRepo.ReleaseClaim(releaseCtx, plan.ID, token)
 	}()
-	if plan.TestKind == "intelligence" {
-		if _, err := s.scheduledSvc.RunIntelligence(ctx, plan); err != nil {
-			logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d intelligence run error: %v", plan.ID, err)
-		}
-		s.advancePlan(ctx, plan)
-		return
-	}
 	result, err := s.accountTestSvc.RunTestBackground(ctx, plan.AccountID, plan.ModelID)
 	if err != nil {
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d RunTestBackground error: %v", plan.ID, err)

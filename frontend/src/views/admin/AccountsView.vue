@@ -457,7 +457,7 @@
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <IntelligencePanel :show="showIntelligencePanel" :account-id="intelligenceAcc?.id ?? null" :model-options="intelligenceModelOptions" @close="closeIntelligencePanel" @open-bank="openIntelligenceBank" />
+    <IntelligencePanel :show="showIntelligencePanel" :account-id="intelligenceAcc?.id ?? null" :account-name="intelligenceAcc?.name" :model-options="intelligenceModelOptions" @close="closeIntelligencePanel" @open-bank="openIntelligenceBank" />
     <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @intelligence="handleIntelligence" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />

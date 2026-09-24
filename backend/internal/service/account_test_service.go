@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
@@ -3304,13 +3305,13 @@ func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID in
 	finishedAt := time.Now()
 	body := w.Body.String()
 	responseText, errMsg := parseTestSSEOutput(body)
+	truncated := len(responseText) > 65536
 	if len(responseText) > 65536 {
 		responseText = responseText[:65536]
+		for !utf8.ValidString(responseText) && len(responseText) > 0 {
+			responseText = responseText[:len(responseText)-1]
+		}
 	}
-	if len(errMsg) > 4096 {
-		errMsg = errMsg[:4096]
-	}
-
 	status := "success"
 	if testErr != nil || errMsg != "" {
 		status = "failed"
@@ -3318,14 +3319,21 @@ func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID in
 			errMsg = testErr.Error()
 		}
 	}
+	if len(errMsg) > 4096 {
+		errMsg = errMsg[:4096]
+		for !utf8.ValidString(errMsg) && len(errMsg) > 0 {
+			errMsg = errMsg[:len(errMsg)-1]
+		}
+	}
 
 	return &ScheduledTestResult{
-		Status:       status,
-		ResponseText: responseText,
-		ErrorMessage: errMsg,
-		LatencyMs:    finishedAt.Sub(startedAt).Milliseconds(),
-		StartedAt:    startedAt,
-		FinishedAt:   finishedAt,
+		Status:          status,
+		OutputTruncated: truncated,
+		ResponseText:    responseText,
+		ErrorMessage:    errMsg,
+		LatencyMs:       finishedAt.Sub(startedAt).Milliseconds(),
+		StartedAt:       startedAt,
+		FinishedAt:      finishedAt,
 	}, nil
 }
 

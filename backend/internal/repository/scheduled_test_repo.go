@@ -20,7 +20,7 @@ const planColumns = `id, account_id, model_id, cron_expression, enabled, max_res
     last_run_at, next_run_at, created_at, updated_at, test_kind, question_ids, custom_prompt, question_cursor`
 
 const resultColumns = `id, plan_id, status, response_text, error_message, latency_ms, started_at,
-    finished_at, created_at, question_snapshot, prompt_snapshot, model_snapshot`
+    finished_at, created_at, question_snapshot, prompt_snapshot, model_snapshot, error_code, output_truncated`
 
 func NewScheduledTestPlanRepository(db *sql.DB) service.ScheduledTestPlanRepository {
 	return &scheduledTestPlanRepository{db: db}
@@ -82,8 +82,26 @@ func (r *scheduledTestPlanRepository) Update(ctx context.Context, plan *service.
 }
 
 func (r *scheduledTestPlanRepository) Delete(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id = $1`, id)
-	return err
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var lockedID int64
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM scheduled_test_plans WHERE id=$1 FOR UPDATE`, id).Scan(&lockedID); err != nil {
+		return err
+	}
+	var active bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM scheduled_test_results WHERE plan_id=$1 AND status IN ('queued','running'))`, id).Scan(&active); err != nil {
+		return err
+	}
+	if active {
+		return service.ErrIntelligenceRunActive
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id=$1`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *scheduledTestPlanRepository) UpdateAfterRun(ctx context.Context, id int64, lastRunAt time.Time, nextRunAt time.Time, expectedUpdatedAt time.Time) error {
@@ -124,7 +142,7 @@ func (r *scheduledTestResultRepository) ListByPlanID(ctx context.Context, planID
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT `+resultColumns+`
 		FROM scheduled_test_results
-		WHERE plan_id = $1
+		WHERE plan_id = $1 AND status NOT IN ('queued', 'running')
 		ORDER BY created_at DESC
 		LIMIT $2
 	`, planID, limit)
@@ -151,7 +169,7 @@ func (r *scheduledTestResultRepository) PruneOldResults(ctx context.Context, pla
 			SELECT id FROM (
 				SELECT id, ROW_NUMBER() OVER (PARTITION BY plan_id ORDER BY created_at DESC) AS rn
 				FROM scheduled_test_results
-				WHERE plan_id = $1
+					WHERE plan_id = $1 AND status NOT IN ('queued', 'running')
 			) ranked
 			WHERE rn > $2
 		)
@@ -281,7 +299,7 @@ func scanResult(row scannable, out *service.ScheduledTestResult) error {
 	var snapshot []byte
 	err := row.Scan(&out.ID, &out.PlanID, &out.Status, &out.ResponseText, &out.ErrorMessage,
 		&out.LatencyMs, &out.StartedAt, &out.FinishedAt, &out.CreatedAt, &snapshot,
-		&out.PromptSnapshot, &out.ModelSnapshot)
+		&out.PromptSnapshot, &out.ModelSnapshot, &out.ErrorCode, &out.OutputTruncated)
 	if err != nil {
 		return err
 	}

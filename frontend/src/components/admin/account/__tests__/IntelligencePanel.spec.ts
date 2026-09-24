@@ -1,79 +1,148 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import IntelligencePanel from '../IntelligencePanel.vue'
 
-const { listQuestions, listByAccount, listResults, runNow, saveQuestion, showError } = vi.hoisted(() => ({
-  listQuestions: vi.fn(), listByAccount: vi.fn(), listResults: vi.fn(), runNow: vi.fn(), saveQuestion: vi.fn(), showError: vi.fn()
+const api = vi.hoisted(() => ({
+  listQuestions: vi.fn(), listByAccount: vi.fn(), listRuns: vi.fn(), createRun: vi.fn(), saveQuestion: vi.fn(), getRun: vi.fn()
 }))
-
-vi.mock('@/api/admin', () => ({ adminAPI: { scheduledTests: { listQuestions, listByAccount, listResults, runNow, saveQuestion } } }))
-vi.mock('@/stores/app', () => ({ useAppStore: () => ({ showError, showSuccess: vi.fn() }) }))
-vi.mock('vue-i18n', async () => {
-  const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
-  return { ...actual, useI18n: () => ({ t: (key: string) => key }) }
+vi.mock('@/api/admin', () => ({ adminAPI: { scheduledTests: api } }))
+vi.mock('@/stores/app', () => ({ useAppStore: () => ({ showError: vi.fn(), showSuccess: vi.fn() }) }))
+vi.mock('vue-i18n', async () => ({ ...await vi.importActual('vue-i18n'), useI18n: () => ({ t: (key: string) => key }) }))
+const plan = { id: 12, account_id: 8, test_kind: 'intelligence', model_id: 'text-model', cron_expression: '0 9 * * *', question_ids: [3], custom_prompt: '', max_results: 100, enabled: false, next_run_at: null }
+const result = { id: 21, plan_id: 12, status: 'success', response_text: '<h1>Example</h1><script>alert(1)</script>', error_message: '', latency_ms: 10, question_snapshot: { id: 3, title: 'HTML', prompt: 'Build HTML', built_in: true }, queued_at: '2026-01-01T00:00:00Z', started_at: '2026-01-01T00:00:00Z', finished_at: '2026-01-01T00:00:01Z', trigger_type: 'manual' }
+const wrappers: ReturnType<typeof mount>[] = []
+const open = (accountId: number | null = 8) => {
+  const wrapper = mount(IntelligencePanel, { props: { show: true, accountId, modelOptions: [{ value: 'text-model', label: 'Text' }] }, global: { stubs: { BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /></div>' }, Icon: true } } })
+  wrappers.push(wrapper)
+  return wrapper
+}
+beforeEach(() => {
+  vi.clearAllMocks()
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(private callback: IntersectionObserverCallback) {}
+    observe(target: Element) { this.callback([{ isIntersecting: true, target } as IntersectionObserverEntry], this as unknown as IntersectionObserver) }
+    disconnect() {}
+    unobserve() {}
+  })
+  api.listQuestions.mockResolvedValue([{ id: 3, title: 'HTML', prompt: 'Build HTML', built_in: true }])
+  api.listByAccount.mockResolvedValue([plan])
+  api.listRuns.mockResolvedValue({ items: [result], total: 1, active_count: 0 })
 })
+afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('IntelligencePanel', () => {
-  it('loads a separate intelligence plan and runs it on demand', async () => {
-    const plan = { id: 12, account_id: 8, test_kind: 'intelligence', model_id: 'text-model', cron_expression: '0 9 * * *',
-      question_ids: [3], custom_prompt: 'Answer briefly', max_results: 100, enabled: true, next_run_at: null }
-    listQuestions.mockResolvedValue([{ id: 3, title: '17 + 25', prompt: '17 + 25?', built_in: true }])
-    listByAccount.mockResolvedValue([{ id: 4, test_kind: 'connectivity' }, plan])
-    listResults.mockResolvedValue([])
-    runNow.mockResolvedValue({ id: 1, status: 'success' })
-    const wrapper = mount(IntelligencePanel, { props: { show: false, accountId: 8, modelOptions: [{ value: 'text-model', label: 'Text' }] },
-      global: { stubs: { BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /></div>' }, Icon: true } } })
-    await wrapper.setProps({ show: true })
+  it('loads history on initial mount and renders HTML inline without clicking details', async () => {
+    const wrapper = open()
     await flushPromises()
-    expect(wrapper.text()).toContain('17 + 25')
-    const button = wrapper.findAll('button').find(item => item.text().includes('admin.intelligence.runNow'))
-    expect(button).toBeDefined()
-    await button!.trigger('click')
-    await flushPromises()
-    expect(runNow).toHaveBeenCalledWith(12)
-    expect(listResults).toHaveBeenCalledWith(12, 100)
-    wrapper.unmount()
-  })
-
-  it('shows legacy results without scoring and previews responses in a sandbox', async () => {
-    listQuestions.mockResolvedValue([])
-    listByAccount.mockResolvedValue([{ id: 13, account_id: 8, test_kind: 'intelligence', model_id: 'text-model', cron_expression: '0 9 * * *', question_ids: [3], custom_prompt: '', max_results: 20, enabled: false }])
-    listResults.mockResolvedValue([{ id: 21, plan_id: 13, status: 'success', response_text: '<h1>Example</h1><script>alert(1)</script>', error_message: '', latency_ms: 10,
-      question_snapshot: { id: 3, kind: 'choice', title: 'Legacy', prompt: 'Build HTML', answer: 'B', choices: ['Yes', 'No'], built_in: true }, score: 100, grade_status: 'correct', started_at: new Date().toISOString() }])
-    const wrapper = mount(IntelligencePanel, { props: { show: false, accountId: 8, modelOptions: [] },
-      global: { stubs: { BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /></div>' }, Icon: true } } })
-    await wrapper.setProps({ show: true })
-    await flushPromises()
-    expect(wrapper.text()).toContain('Legacy')
-    expect(wrapper.text()).toContain('admin.scheduledTests.success')
-    expect(wrapper.text()).not.toContain('admin.intelligence.answer')
-    expect(wrapper.text()).not.toContain('admin.intelligence.accuracy')
-    expect(wrapper.find('input[type="number"]').exists()).toBe(true) // Result retention setting only.
-    expect(wrapper.find('input[aria-label="admin.intelligence.score"]').exists()).toBe(false)
-    const button = wrapper.findAll('button').find(item => item.text().includes('admin.intelligence.preview'))
-    await button!.trigger('click')
+    expect(api.listRuns).toHaveBeenCalledWith(12, 1, '', expect.any(AbortSignal))
     const frame = wrapper.get('iframe')
     expect(frame.attributes('sandbox')).toBe('')
     expect(frame.attributes('srcdoc')).toContain("default-src 'none'")
-    wrapper.unmount()
+    expect(frame.attributes('srcdoc')).toContain('<h1>Example</h1>')
+    expect(wrapper.find('input[aria-label="admin.intelligence.score"]').exists()).toBe(false)
+    expect(api.createRun).not.toHaveBeenCalled()
   })
 
-  it('saves a prompt-only question without options or an expected answer', async () => {
-    listQuestions.mockResolvedValue([])
-    saveQuestion.mockResolvedValue({ id: 30, title: 'HTML', prompt: 'Build a table', built_in: false })
-    const wrapper = mount(IntelligencePanel, { props: { show: false, accountId: null, modelOptions: [] },
-      global: { stubs: { BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /></div>' }, Icon: true } } })
-    await wrapper.setProps({ show: true })
+  it('loads history independently when question discovery fails', async () => {
+    api.listQuestions.mockRejectedValue(new Error('unavailable'))
+    const wrapper = open()
     await flushPromises()
-    const add = wrapper.findAll('button').find(item => item.text().includes('admin.intelligence.addQuestion'))
-    await add!.trigger('click')
-    await wrapper.get('input[maxlength="160"]').setValue('HTML')
+    expect(wrapper.find('iframe').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('admin.intelligence.noRuns')
+  })
+
+  it('does not show empty history while loading', async () => {
+    let resolve!: (value: unknown) => void
+    api.listRuns.mockReturnValue(new Promise(r => { resolve = r }))
+    const wrapper = open()
+    await flushPromises()
+    expect(wrapper.text()).toContain('common.loading')
+    expect(wrapper.text()).not.toContain('admin.intelligence.noRuns')
+    resolve({ items: [], total: 0, active_count: 0 })
+    await flushPromises()
+    expect(wrapper.text()).toContain('admin.intelligence.noRuns')
+  })
+
+  it('shows a persisted queued record immediately and prevents a second submission', async () => {
+    api.createRun.mockResolvedValue({ ...result, id: 22, status: 'queued', response_text: '', started_at: null, finished_at: null })
+    const wrapper = open()
+    await flushPromises()
+    const button = wrapper.findAll('button').find(item => item.text().includes('admin.intelligence.runNow'))!
+    await button.trigger('click')
+    await flushPromises()
+    expect(api.createRun).toHaveBeenCalledWith(12, expect.stringMatching(/^[a-f0-9-]{36}$/))
+    expect(wrapper.text()).toContain('admin.intelligence.state_queued')
+    expect(wrapper.find('[data-run-id="22"]').exists()).toBe(true)
+    await button.trigger('click')
+    expect(api.createRun).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows failed partial responses as well as the error', async () => {
+    api.listRuns.mockResolvedValue({ items: [{ ...result, status: 'failed', error_code: 'execution_timeout', error_message: 'deadline exceeded' }], total: 1, active_count: 0 })
+    const wrapper = open()
+    await flushPromises()
+    expect(wrapper.text()).toContain('admin.intelligence.partialOutput')
+    expect(wrapper.text()).toContain('deadline exceeded')
+    expect(wrapper.find('iframe').exists()).toBe(true)
+  })
+
+  it('rejects stale account history when switching accounts', async () => {
+    let resolve!: (value: unknown) => void
+    api.listRuns.mockReturnValueOnce(new Promise(r => { resolve = r }))
+    const wrapper = open()
+    await flushPromises()
+    api.listByAccount.mockResolvedValue([{ ...plan, id: 13, account_id: 9 }])
+    api.listRuns.mockResolvedValue({ items: [], total: 0, active_count: 0 })
+    await wrapper.setProps({ accountId: 9 })
+    await flushPromises()
+    resolve({ items: [result], total: 1, active_count: 0 })
+    await flushPromises()
+    expect(wrapper.find('iframe').exists()).toBe(false)
+    expect(wrapper.text()).toContain('admin.intelligence.noRuns')
+  })
+
+  it('saves prompt-only questions', async () => {
+    api.saveQuestion.mockResolvedValue({ id: 30 })
+    const wrapper = open(null)
+    await flushPromises()
+    await wrapper.findAll('button').find(item => item.text().includes('admin.intelligence.addQuestion'))!.trigger('click')
+    await wrapper.get('input[maxlength="160"]').setValue('Example')
     await wrapper.get('textarea[maxlength="8000"]').setValue('Build a table')
-    expect(wrapper.find('select').exists()).toBe(false)
-    const save = wrapper.findAll('button').find(item => item.text().includes('common.save'))
-    await save!.trigger('click')
+    await wrapper.findAll('button').find(item => item.text().includes('common.save'))!.trigger('click')
     await flushPromises()
-    expect(saveQuestion).toHaveBeenCalledWith({ id: 0, title: 'HTML', prompt: 'Build a table', built_in: false })
-    wrapper.unmount()
+    expect(api.saveQuestion).toHaveBeenCalledWith({ id: 0, title: 'Example', prompt: 'Build a table', built_in: false })
+  })
+
+  it('reuses the idempotency key when acceptance is unknown', async () => {
+    api.createRun.mockRejectedValueOnce(new Error('network disconnected')).mockResolvedValueOnce({ ...result, id: 22, status: 'queued', response_text: '' })
+    const wrapper = open()
+    await flushPromises()
+    const button = wrapper.findAll('button').find(item => item.text().includes('admin.intelligence.runNow'))!
+    await button.trigger('click')
+    await flushPromises()
+    await button.trigger('click')
+    await flushPromises()
+    expect(api.createRun).toHaveBeenCalledTimes(2)
+    expect(api.createRun.mock.calls[0][1]).toBe(api.createRun.mock.calls[1][1])
+  })
+
+  it('polls active work and pauses when the document is hidden', async () => {
+    vi.useFakeTimers()
+    api.listRuns.mockResolvedValue({ items: [{ ...result, status: 'running', response_text: '' }], total: 1, active_count: 1 })
+    open()
+    await flushPromises()
+    expect(api.listRuns).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+    expect(api.listRuns).toHaveBeenCalledTimes(2)
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(16000)
+    expect(api.listRuns).toHaveBeenCalledTimes(2)
+    hidden.mockReturnValue(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    expect(api.listRuns).toHaveBeenCalledTimes(3)
+    hidden.mockRestore()
   })
 })

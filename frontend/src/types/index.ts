@@ -2455,6 +2455,23 @@ export interface IntelligenceQuestion {
   built_in: boolean
 }
 
+export interface IntelligenceRun extends Omit<ScheduledTestResult, 'started_at' | 'finished_at'> {
+  queued_at: string
+  started_at: string | null
+  finished_at: string | null
+  trigger_type: 'manual' | 'scheduled' | 'legacy'
+  error_code?: string
+  output_truncated: boolean
+}
+
+export interface IntelligenceRunPage {
+  items: IntelligenceRun[]
+  total: number
+  active_count: number
+  page: number
+  page_size: number
+}
+
 // Payment types
 export type { SubscriptionPlan, PaymentOrder, CheckoutInfoResponse } from './payment'
 

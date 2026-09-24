@@ -9,7 +9,9 @@ import type {
   ScheduledTestResult,
   CreateScheduledTestPlanRequest,
   UpdateScheduledTestPlanRequest,
-  IntelligenceQuestion
+  IntelligenceQuestion,
+  IntelligenceRun,
+  IntelligenceRunPage
 } from '@/types'
 
 /**
@@ -17,9 +19,9 @@ import type {
  * @param accountId - Account ID
  * @returns List of scheduled test plans
  */
-export async function listByAccount(accountId: number): Promise<ScheduledTestPlan[]> {
+export async function listByAccount(accountId: number, signal?: AbortSignal): Promise<ScheduledTestPlan[]> {
   const { data } = await apiClient.get<ScheduledTestPlan[]>(
-    `/admin/accounts/${accountId}/scheduled-test-plans`
+    `/admin/accounts/${accountId}/scheduled-test-plans`, { signal }
   )
   return data ?? []
 }
@@ -76,6 +78,18 @@ export async function listResults(planId: number, limit?: number): Promise<Sched
 }
 
 export const scheduledTestsAPI = {
+  async createRun(planId: number, key: string): Promise<IntelligenceRun> {
+    const { data } = await apiClient.post<IntelligenceRun>(`/admin/scheduled-test-plans/${planId}/runs`, null, { headers: { 'Idempotency-Key': key } })
+    return data
+  },
+  async listRuns(planId: number, page = 1, status = '', signal?: AbortSignal): Promise<IntelligenceRunPage> {
+    const { data } = await apiClient.get<IntelligenceRunPage>(`/admin/scheduled-test-plans/${planId}/runs`, { params: { page, page_size: 10, status }, signal })
+    return data
+  },
+  async getRun(planId: number, runId: number): Promise<IntelligenceRun> {
+    const { data } = await apiClient.get<IntelligenceRun>(`/admin/scheduled-test-plans/${planId}/runs/${runId}`)
+    return data
+  },
   listByAccount,
   create,
   update,

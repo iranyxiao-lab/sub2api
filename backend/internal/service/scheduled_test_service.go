@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
 )
 
@@ -146,49 +145,11 @@ func (s *ScheduledTestService) DeleteQuestion(ctx context.Context, id int64) err
 }
 
 func (s *ScheduledTestService) RunIntelligence(ctx context.Context, plan *ScheduledTestPlan) (*ScheduledTestResult, error) {
-	if plan.TestKind != "intelligence" || len(plan.QuestionIDs) == 0 {
-		return nil, fmt.Errorf("invalid intelligence plan")
-	}
-	cursor, err := s.planRepo.AdvanceQuestion(ctx, plan.ID)
-	if err != nil {
-		return nil, err
-	}
-	question, err := s.planRepo.GetQuestion(ctx, plan.QuestionIDs[int(cursor%int64(len(plan.QuestionIDs)))])
-	if err != nil {
-		return nil, err
-	}
-	prompt := strings.TrimSpace(plan.CustomPrompt + "\n\n" + question.Prompt)
-	result, err := s.accountTest.RunTestBackground(ctx, plan.AccountID, plan.ModelID, prompt)
-	if err != nil {
-		now := time.Now()
-		result = &ScheduledTestResult{Status: "failed", ErrorMessage: err.Error(), StartedAt: now, FinishedAt: now}
-	}
-	result.QuestionSnapshot = question
-	result.PromptSnapshot = prompt
-	result.ModelSnapshot = plan.ModelID
-	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	if err := s.SaveResult(saveCtx, plan.ID, plan.MaxResults, result); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return s.waitForRun(ctx, plan)
 }
 
 func (s *ScheduledTestService) RunIntelligenceNow(ctx context.Context, plan *ScheduledTestPlan) (*ScheduledTestResult, error) {
-	token := uuid.NewString()
-	claimed, err := s.planRepo.TryClaim(ctx, plan.ID, time.Now().Add(3*time.Minute), token, false)
-	if err != nil {
-		return nil, err
-	}
-	if !claimed {
-		return nil, fmt.Errorf("test already running")
-	}
-	defer func() {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = s.planRepo.ReleaseClaim(releaseCtx, plan.ID, token)
-	}()
-	return s.RunIntelligence(ctx, plan)
+	return s.waitForRun(ctx, plan)
 }
 
 // DeletePlan removes a plan and its results (via CASCADE).
