@@ -7,6 +7,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/releasecontrol"
 	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
 )
@@ -69,8 +70,10 @@ func (s *ScheduledTestRunnerService) Start() {
 			return
 		}
 		s.cron = c
-		s.cron.Start()
-		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] started (tick=every minute)")
+		releasecontrol.Start("scheduled-tests", func() {
+			s.cron.Start()
+			logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] started (tick=every minute)")
+		})
 	})
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/releasecontrol"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/setup"
 	"github.com/Wei-Shaw/sub2api/internal/web"
@@ -136,6 +137,11 @@ func runMainServer() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	// On-chain providers perform startup writes before worker construction. Until
+	// those providers support deferred initialization, reject staged mode explicitly.
+	if releasecontrol.Configured() && (cfg.Onchain.TRON.Enabled || cfg.Onchain.Ethereum.Enabled) {
+		log.Fatal("Staged release is not supported with on-chain runtimes enabled")
+	}
 	if err := validateEthereumOnchainStartup(context.Background(), cfg.Onchain.Ethereum); err != nil {
 		log.Fatalf("Ethereum on-chain startup validation failed: %v", err)
 	}
@@ -156,10 +162,13 @@ func runMainServer() {
 		log.Fatalf("Failed to initialize application: %v", err)
 	}
 	defer app.Cleanup()
+	defer releasecontrol.Stop()
 	if app.PluginManager != nil {
-		if err := app.PluginManager.Start(context.Background()); err != nil {
-			log.Printf("Plugin manager started in degraded state: %v", err)
-		}
+		releasecontrol.Start("plugins", func() {
+			if err := app.PluginManager.Start(context.Background()); err != nil {
+				log.Printf("Plugin manager started in degraded state: %v", err)
+			}
+		})
 	}
 	if app.PromptAudit != nil {
 		if err := app.PromptAudit.Start(context.Background()); err != nil {

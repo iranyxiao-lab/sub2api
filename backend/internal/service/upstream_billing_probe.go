@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/releasecontrol"
 	"io"
 	"log/slog"
 	"math"
@@ -301,7 +302,7 @@ func ProvideUpstreamBillingProbeService(
 ) *UpstreamBillingProbeService {
 	svc := NewUpstreamBillingProbeService(accountRepo, accountTestService, settingService)
 	svc.SetLeaderLock(lockCache, db)
-	svc.Start()
+	releasecontrol.Start("upstream_billing_probe", svc.Start)
 	return svc
 }
 

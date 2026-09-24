@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/releasecontrol"
 )
 
 type BatchImageWorkerRuntime struct {
@@ -57,7 +58,7 @@ func ProvideBatchImageWorkerRuntime(
 		StaleAfter: NewBatchImageWorkerOptionsFromConfig(cfg).StaleActiveAfter,
 		Limit:      NewBatchImageWorkerOptionsFromConfig(cfg).RecoverLimit,
 	}
-	runtime.Start()
+	releasecontrol.Start("batch-image-workers", runtime.Start)
 	return runtime
 }
 

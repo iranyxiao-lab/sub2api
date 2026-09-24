@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/releasecontrol"
 	"io"
 	"maps"
 	"math/rand/v2"
@@ -442,7 +443,7 @@ func ProvideOllamaCloudUsageService(
 	svc := NewOllamaCloudUsageService(accountRepo, httpUpstream, settingService, encryptor, keyConfigured)
 	svc.lockCache = lockCache
 	svc.db = db
-	svc.Start()
+	releasecontrol.Start("ollama_cloud_usage", svc.Start)
 	return svc
 }
 

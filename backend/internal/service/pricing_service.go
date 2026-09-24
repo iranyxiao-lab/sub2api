@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/releasecontrol"
 	"maps"
 	"os"
 	"path/filepath"
@@ -237,7 +238,7 @@ func (s *PricingService) Initialize() error {
 	}
 
 	// 启动定时更新
-	s.startUpdateScheduler()
+	releasecontrol.Start("pricing-refresh", s.startUpdateScheduler)
 
 	logger.LegacyPrintf("service.pricing", "[Pricing] Service initialized with %d models", len(s.pricingData))
 	return nil
@@ -299,6 +300,11 @@ func (s *PricingService) startUpdateScheduler() {
 // checkAndUpdatePricing 检查并更新价格数据
 func (s *PricingService) checkAndUpdatePricing() error {
 	pricingFile := s.getPricingFilePath()
+	if releasecontrol.Configured() {
+		// Candidate uses a private copy of the existing pricing file. Missing or
+		// invalid data falls back locally without changing shared production files.
+		return s.loadPricingData(pricingFile)
+	}
 
 	// 检查本地文件是否存在
 	if _, err := os.Stat(pricingFile); os.IsNotExist(err) {
