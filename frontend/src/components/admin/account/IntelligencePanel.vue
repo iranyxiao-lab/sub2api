@@ -88,6 +88,7 @@ import { Icon } from '@/components/icons'
 import { adminAPI } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
 import { formatDateTime } from '@/utils/format'
+import { createRequestId } from '@/utils/requestId'
 import type { IntelligenceQuestion, IntelligenceRun, ScheduledTestPlan } from '@/types'
 
 const props = defineProps<{ show: boolean; accountId: number | null; accountName?: string; modelOptions: SelectOption[] }>()
@@ -203,10 +204,12 @@ const runNow = async () => {
   if (!plan.value || busy.value || activeCount.value) return
   const id = plan.value.id
   const epoch = generation
-  const key = submissionKeys.get(id) || crypto.randomUUID()
-  submissionKeys.set(id, key)
+  let submitted = false
   busy.value = true
   try {
+    const key = submissionKeys.get(id) || createRequestId()
+    submissionKeys.set(id, key)
+    submitted = true
     const run = await adminAPI.scheduledTests.createRun(id, key)
     submissionKeys.delete(id)
     if (epoch !== generation) return
@@ -215,7 +218,12 @@ const runNow = async () => {
     historyLoaded.value = true; historyError.value = false
     activeCount.value = ['queued', 'running'].includes(run.status) ? 1 : 0
     schedulePoll()
-  } catch { if (epoch === generation) { app.showError(t('admin.intelligence.submitUnknown')); void refreshHistory() } }
+  } catch {
+    if (epoch === generation) {
+      app.showError(t(submitted ? 'admin.intelligence.submitUnknown' : 'admin.intelligence.requestIdFailed'))
+      if (submitted) void refreshHistory()
+    }
+  }
   finally { busy.value = false }
 }
 const savePlan = async (start: boolean) => {
@@ -229,11 +237,12 @@ const savePlan = async (start: boolean) => {
     const saved = currentPlan ? await adminAPI.scheduledTests.update(currentPlan.id, data) : await adminAPI.scheduledTests.create(data)
     if (epoch !== generation) return
     plan.value = saved; app.showSuccess(t('admin.scheduledTests.updateSuccess'))
-    busy.value = false
-    if (start) await runNow()
-    else await refreshHistory()
-  } catch { if (epoch === generation) app.showError(t('admin.intelligence.saveFailed')) }
+  } catch { if (epoch === generation) app.showError(t('admin.intelligence.saveFailed')); return }
   finally { busy.value = false }
+  if (epoch !== generation) return
+  // A subsequent submission failure must not be reported as a failed save.
+  if (start) await runNow()
+  else await refreshHistory()
 }
 const startNewQuestion = () => { editingQuestion.value = { id: 0, title: '', prompt: '', built_in: false } }
 const saveQuestion = async () => {

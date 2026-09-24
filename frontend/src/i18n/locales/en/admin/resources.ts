@@ -30,6 +30,7 @@ export default {
       daily: 'Daily at 09:00',
       customSchedule: 'Custom',
       submitUnknown: 'Submission not confirmed. Refresh history; clicking again retries the same request.',
+      requestIdFailed: 'Unable to create a test request ID. Retry in a browser with secure random values; saved settings are unaffected.',
       trigger_manual: 'Manual',
       trigger_scheduled: 'Scheduled',
       trigger_legacy: 'Historical',

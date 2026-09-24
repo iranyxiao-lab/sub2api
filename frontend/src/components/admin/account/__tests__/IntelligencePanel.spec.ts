@@ -3,10 +3,11 @@ import { flushPromises, mount } from '@vue/test-utils'
 import IntelligencePanel from '../IntelligencePanel.vue'
 
 const api = vi.hoisted(() => ({
-  listQuestions: vi.fn(), listByAccount: vi.fn(), listRuns: vi.fn(), createRun: vi.fn(), saveQuestion: vi.fn(), getRun: vi.fn()
+  listQuestions: vi.fn(), listByAccount: vi.fn(), listRuns: vi.fn(), createRun: vi.fn(), saveQuestion: vi.fn(), getRun: vi.fn(), update: vi.fn(), create: vi.fn()
 }))
 vi.mock('@/api/admin', () => ({ adminAPI: { scheduledTests: api } }))
-vi.mock('@/stores/app', () => ({ useAppStore: () => ({ showError: vi.fn(), showSuccess: vi.fn() }) }))
+const notifications = vi.hoisted(() => ({ showError: vi.fn(), showSuccess: vi.fn() }))
+vi.mock('@/stores/app', () => ({ useAppStore: () => notifications }))
 vi.mock('vue-i18n', async () => ({ ...await vi.importActual('vue-i18n'), useI18n: () => ({ t: (key: string) => key }) }))
 const plan = { id: 12, account_id: 8, test_kind: 'intelligence', model_id: 'text-model', cron_expression: '0 9 * * *', question_ids: [3], custom_prompt: '', max_results: 100, enabled: false, next_run_at: null }
 const result = { id: 21, plan_id: 12, status: 'success', response_text: '<h1>Example</h1><script>alert(1)</script>', error_message: '', latency_ms: 10, question_snapshot: { id: 3, title: 'HTML', prompt: 'Build HTML', built_in: true }, queued_at: '2026-01-01T00:00:00Z', started_at: '2026-01-01T00:00:00Z', finished_at: '2026-01-01T00:00:01Z', trigger_type: 'manual' }
@@ -27,10 +28,57 @@ beforeEach(() => {
   api.listQuestions.mockResolvedValue([{ id: 3, title: 'HTML', prompt: 'Build HTML', built_in: true }])
   api.listByAccount.mockResolvedValue([plan])
   api.listRuns.mockResolvedValue({ items: [result], total: 1, active_count: 0 })
+  api.update.mockResolvedValue(plan)
+  api.create.mockResolvedValue(plan)
 })
 afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('IntelligencePanel', () => {
+  const httpCrypto = () => vi.stubGlobal('crypto', {
+    getRandomValues: (bytes: Uint8Array) => bytes.fill(42)
+  })
+
+  it('submits run immediately on HTTP where randomUUID is unavailable', async () => {
+    httpCrypto()
+    api.createRun.mockResolvedValue({ ...result, id: 22, status: 'queued', response_text: '' })
+    const wrapper = open()
+    await flushPromises()
+    await wrapper.findAll('button').find(b => b.text().includes('admin.intelligence.runNow'))!.trigger('click')
+    await flushPromises()
+    expect(api.createRun).toHaveBeenCalledWith(12, expect.stringMatching(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/))
+    expect(wrapper.find('[data-run-id="22"]').exists()).toBe(true)
+    expect(notifications.showError).not.toHaveBeenCalled()
+  })
+
+  it('saves and starts on HTTP without misreporting a save failure', async () => {
+    httpCrypto()
+    api.createRun.mockResolvedValue({ ...result, id: 22, status: 'queued', response_text: '' })
+    const wrapper = open()
+    await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === 'admin.intelligence.settings')!.trigger('click')
+    await wrapper.findAll('button').find(b => b.text() === 'admin.intelligence.saveAndRun')!.trigger('click')
+    await flushPromises()
+    expect(api.update).toHaveBeenCalledWith(12, expect.objectContaining({ model_id: 'text-model' }))
+    expect(api.createRun).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-run-id="22"]').exists()).toBe(true)
+    expect(notifications.showError).not.toHaveBeenCalled()
+  })
+
+  it('reports local submission failure separately and releases the busy state', async () => {
+    vi.stubGlobal('crypto', undefined)
+    const wrapper = open()
+    await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === 'admin.intelligence.settings')!.trigger('click')
+    const button = wrapper.findAll('button').find(b => b.text() === 'admin.intelligence.saveAndRun')!
+    await button.trigger('click')
+    await flushPromises()
+    expect(api.update).toHaveBeenCalledTimes(1)
+    expect(api.createRun).not.toHaveBeenCalled()
+    expect(notifications.showError).toHaveBeenCalledWith('admin.intelligence.requestIdFailed')
+    expect(notifications.showError).not.toHaveBeenCalledWith('admin.intelligence.saveFailed')
+    expect(button.attributes('disabled')).toBeUndefined()
+  })
+
   it('loads history on initial mount and renders HTML inline without clicking details', async () => {
     const wrapper = open()
     await flushPromises()

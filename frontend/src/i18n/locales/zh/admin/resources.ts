@@ -30,6 +30,7 @@ export default {
       daily: '每天 09:00',
       customSchedule: '自定义',
       submitUnknown: '提交未确认，请刷新查看记录；再次点击将使用同一请求重试。',
+      requestIdFailed: '无法创建测试请求标识。请使用支持安全随机数的浏览器重试；已保存的设置不受影响。',
       trigger_manual: '手动测试',
       trigger_scheduled: '定时测试',
       trigger_legacy: '历史记录',
