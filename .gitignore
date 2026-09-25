@@ -1,5 +1,7 @@
 # 本地杂项文档、测试数据和外部项目副本
 /docs-local/
+/client_script/
+/tools/tmp-reasoning-probe/
 .codex
 
 # ===================
