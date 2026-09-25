@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -121,7 +122,7 @@ func (s *ScheduledTestService) executeIntelligenceRun(parent context.Context, ru
 			log.Printf("[IntelligenceWorker] run=%d panic contained", run.ID)
 		}
 		result.LatencyMs = time.Since(started).Milliseconds()
-		log.Printf("[IntelligenceWorker] run=%d account=%d status=%s error_code=%s timeout_seconds=%d total_ms=%d", run.ID, run.AccountID, result.Status, result.ErrorCode, timeoutSeconds, result.LatencyMs)
+		slog.Info("intelligence run finished", "run_id", run.ID, "account_id", run.AccountID, "status", result.Status, "error_code", result.ErrorCode, "timeout_seconds", timeoutSeconds, "total_ms", result.LatencyMs)
 		saveCtx, saveCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer saveCancel()
 		if err := s.resultRepo.CompleteIntelligenceRun(saveCtx, run, result); err != nil {
