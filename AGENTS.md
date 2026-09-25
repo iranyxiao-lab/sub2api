@@ -125,8 +125,8 @@ homestay 生产环境通过本地 `~/.ssh/config` 中的 SSH 别名 `homestay` �
 - 仅通过 `ssh homestay` 连接。由 SSH 别名决定用户、端口、主机与密钥；不要将真实主机名、私钥路径或凭据复制到本仓库。
 - 该主机是多租户的：明确在本任务范围内的是 `/opt/sub2api` Sub2API Compose 项目；另有 `/opt/sub2api-e2e` 检出和其他业务，绝不停止、重建或重新配置无关服务。
 - homestay 的目标部署目录是 `/opt/sub2api`，其中包含 Compose 文件、权限为 600 的 `.env`、发布镜像和备份；部署前必须重新核实目录内容、服务名、端口和近期备份，不得打印含密钥的 Compose 展开配置。
-- 2026-09-25 HTTP 提交修复发布后，应用服务为 `sub2api-httpfix`，loopback 端口为 `18084`；PostgreSQL/Redis 仍是原服务。`/opt/sub2api/docker-compose.yml` 为持久化入口，上一版 `sub2api-next`（18083）及更早的 `sub2api` 容器停止保留。部署前仍必须重新核实，不得启动旧应用与新应用并行处理周期任务。
-- 当前应用的数据目录及激活标记位于 `/opt/sub2api/releases/intelligence-83f1c97c5/`，镜像为 `sub2api:intelligence-83f1c97c5`。回滚资料也位于该发布目录；回滚先按发布文档排空流量并停止新实例，再恢复上一版实例和代理配置，并恢复其重启策略。不要只恢复代理而留下两套周期任务运行。
+- 2026-09-25 智力测试超时修复发布后，应用服务为 `sub2api-timeout-final`，loopback 端口为 `18086`；PostgreSQL/Redis 仍是原服务。`/opt/sub2api/docker-compose.yml` 为持久化入口，上一版 `sub2api-timeout`（18085）、`sub2api-httpfix`（18084）及更早的应用容器停止保留，重启策略为 no。部署前仍必须重新核实，不得启动旧应用与新应用并行处理周期任务。
+- 当前应用的数据目录及激活标记位于 `/opt/sub2api/releases/intelligence-timeout-c4c50767c/`，镜像为 `sub2api:intelligence-timeout-c4c50767c`。发布证据见 `docs/intelligence-timeout-release-20260925.zh.md`。回滚资料也位于该发布目录；回滚先按发布文档排空流量并停止新实例，再恢复上一版实例和代理配置，并恢复其重启策略。不要只恢复代理而留下两套周期任务运行。
 - 主机级 nginx 一直在监听 `80` 和 `443` 用于 TLS 终止；`systemctl is-active nginx` 不能可靠反映其状态，因此请检查运行中的进程或管理面板，不要据此认定服务已停止。
 - 切勿将本地的 `.env`、`deploy/.env`、`backend/config.yaml`、`.ssh` 内容或数据库数据目录复制到该主机。切勿打印 `docker compose config` 的输出，因为环境变量插值可能泄露密钥。
 - homestay 的部署、重启、镜像拉取或迁移都属于变更操作，需要用户明确授权。仅通过测试不构成授权。
