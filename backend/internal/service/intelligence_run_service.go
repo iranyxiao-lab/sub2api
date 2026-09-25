@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/google/uuid"
 )
 
@@ -32,7 +33,11 @@ func (s *ScheduledTestService) EnqueueRun(ctx context.Context, plan *ScheduledTe
 		}
 		next = &n
 	}
-	return s.resultRepo.EnqueueIntelligenceRun(ctx, plan.ID, key, trigger, next)
+	policy := config.IntelligenceTestConfig{}
+	if s.accountTest != nil && s.accountTest.cfg != nil {
+		policy = s.accountTest.cfg.IntelligenceTest
+	}
+	return s.resultRepo.EnqueueIntelligenceRun(ctx, plan.ID, key, trigger, next, policy.TimeoutSeconds())
 }
 
 func (s *ScheduledTestService) ListRuns(ctx context.Context, planID int64, status string, page, pageSize int) (*IntelligenceRunPage, error) {
@@ -100,7 +105,11 @@ func (s *ScheduledTestService) runIntelligenceWorker(ctx context.Context) {
 }
 
 func (s *ScheduledTestService) executeIntelligenceRun(parent context.Context, run *IntelligenceRun) {
-	ctx, cancel := context.WithTimeout(parent, 120*time.Second)
+	timeoutSeconds := run.ExecutionTimeoutSeconds
+	if timeoutSeconds == 0 {
+		timeoutSeconds = config.DefaultIntelligenceTimeoutSeconds
+	}
+	ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 	started := time.Now()
 	result := &ScheduledTestResult{Status: "interrupted", ErrorCode: "worker_interrupted", ErrorMessage: "Test worker was interrupted"}
@@ -112,6 +121,7 @@ func (s *ScheduledTestService) executeIntelligenceRun(parent context.Context, ru
 			log.Printf("[IntelligenceWorker] run=%d panic contained", run.ID)
 		}
 		result.LatencyMs = time.Since(started).Milliseconds()
+		log.Printf("[IntelligenceWorker] run=%d account=%d status=%s error_code=%s timeout_seconds=%d total_ms=%d", run.ID, run.AccountID, result.Status, result.ErrorCode, timeoutSeconds, result.LatencyMs)
 		saveCtx, saveCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer saveCancel()
 		if err := s.resultRepo.CompleteIntelligenceRun(saveCtx, run, result); err != nil {

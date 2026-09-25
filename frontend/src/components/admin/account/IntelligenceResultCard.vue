@@ -8,6 +8,7 @@
       <div class="flex items-center gap-2 text-xs">
         <span class="rounded-full px-2.5 py-1 font-medium" :class="statusClass">{{ t(`admin.intelligence.state_${run.status}`) }}</span>
         <span class="tabular-nums text-gray-500">{{ elapsed }}s</span>
+        <span v-if="run.execution_timeout_seconds" class="text-gray-500">{{ t('admin.intelligence.executionLimit', { seconds: run.execution_timeout_seconds }) }}</span>
       </div>
     </header>
     <div v-if="active" class="flex items-center gap-3 px-4 py-6 text-sm text-gray-500" role="status">
@@ -82,7 +83,7 @@ const html = computed(() => buildStaticHtmlPreview(props.run.response_text))
 const active = computed(() => ['queued', 'running'].includes(props.run.status))
 const elapsed = computed(() => (active.value ? Math.max(0, props.now - Date.parse(props.run.started_at || props.run.queued_at)) / 1000 : props.run.latency_ms / 1000).toFixed(1))
 const statusClass = computed(() => active.value ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' : props.run.status === 'success' ? 'bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300')
-const errorLabel = computed(() => t(`admin.intelligence.error_${['execution_timeout', 'queue_timeout', 'worker_interrupted'].includes(props.run.error_code || '') ? props.run.error_code : 'upstream_error'}`))
+const errorLabel = computed(() => t(`admin.intelligence.error_${['execution_timeout', 'queue_timeout', 'worker_interrupted'].includes(props.run.error_code || '') ? props.run.error_code : 'upstream_error'}`, { seconds: props.run.execution_timeout_seconds ?? 120 }))
 
 onMounted(() => {
   if (typeof IntersectionObserver === 'undefined') { visible.value = true; return }

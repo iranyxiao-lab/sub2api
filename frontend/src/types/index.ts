@@ -2456,6 +2456,7 @@ export interface IntelligenceQuestion {
 }
 
 export interface IntelligenceRun extends Omit<ScheduledTestResult, 'started_at' | 'finished_at'> {
+  execution_timeout_seconds?: number
   queued_at: string
   started_at: string | null
   finished_at: string | null

@@ -66,6 +66,7 @@ const DefaultUpstreamResponseReadMaxBytes int64 = 128 * 1024 * 1024
 const DefaultModelsListReadMaxBytes int64 = 8 * 1024 * 1024
 
 type Config struct {
+	IntelligenceTest        IntelligenceTestConfig        `mapstructure:"intelligence_test"`
 	Server                  ServerConfig                  `mapstructure:"server"`
 	Log                     LogConfig                     `mapstructure:"log"`
 	CORS                    CORSConfig                    `mapstructure:"cors"`
@@ -1999,6 +2000,7 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 }
 
 func setDefaults() {
+	viper.SetDefault("intelligence_test.execution_timeout_seconds", DefaultIntelligenceTimeoutSeconds)
 	viper.SetDefault("run_mode", RunModeStandard)
 	setOnchainDefaults()
 	viper.SetDefault("simple_mode.auto_create_default_groups", true)
@@ -2661,6 +2663,9 @@ func setEnvReachableDefaults() {
 }
 
 func (c *Config) Validate() error {
+	if err := c.IntelligenceTest.Validate(); err != nil {
+		return err
+	}
 	if err := c.Onchain.Validate(); err != nil {
 		return err
 	}

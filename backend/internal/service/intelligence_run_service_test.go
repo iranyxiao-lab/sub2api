@@ -21,8 +21,8 @@ type lifecycleResultRepo struct {
 	completed chan *ScheduledTestResult
 }
 
-func (r *lifecycleResultRepo) EnqueueIntelligenceRun(_ context.Context, id int64, _, _ string, _ *time.Time) (*IntelligenceRun, error) {
-	run := &IntelligenceRun{ScheduledTestResult: ScheduledTestResult{ID: 1, PlanID: id, Status: "queued", ModelSnapshot: "gpt-5.4", PromptSnapshot: "Write HTML"}, AccountID: 1, MaxResults: 10}
+func (r *lifecycleResultRepo) EnqueueIntelligenceRun(_ context.Context, id int64, _, _ string, _ *time.Time, timeoutSeconds int) (*IntelligenceRun, error) {
+	run := &IntelligenceRun{ScheduledTestResult: ScheduledTestResult{ID: 1, PlanID: id, Status: "queued", ModelSnapshot: "gpt-5.4", PromptSnapshot: "Write HTML"}, AccountID: 1, MaxResults: 10, ExecutionTimeoutSeconds: timeoutSeconds}
 	r.enqueued <- run
 	return run, nil
 }
@@ -130,4 +130,31 @@ func TestIntelligenceRunOutputTruncationIsUTF8Safe(t *testing.T) {
 	require.True(t, utf8.ValidString(result.ResponseText))
 	require.LessOrEqual(t, len(result.ResponseText), 65536)
 	require.Greater(t, len(result.ResponseText), 65532)
+}
+
+func TestIntelligenceRunSurvivesOld120SecondDeadline(t *testing.T) {
+	u := &delayedIntelligenceUpstream{started: make(chan context.Context, 1), delay: 121 * time.Second, text: "complete answer"}
+	svc, repo := intelligenceLifecycleService(u)
+	run, err := svc.EnqueueRun(context.Background(), &ScheduledTestPlan{ID: 1, TestKind: "intelligence"}, "long-run", "manual")
+	require.NoError(t, err)
+	require.Equal(t, 300, run.ExecutionTimeoutSeconds)
+	svc.executeIntelligenceRun(context.Background(), run)
+	result := <-repo.completed
+	require.Equal(t, "success", result.Status)
+	require.Equal(t, u.text, result.ResponseText)
+	require.Greater(t, result.LatencyMs, int64(120000))
+}
+
+func TestIntelligenceRunUsesSnapshotDeadlineAndKeepsPartialOutput(t *testing.T) {
+	u := &delayedIntelligenceUpstream{started: make(chan context.Context, 1), delay: 5 * time.Second, text: "partial answer"}
+	svc, repo := intelligenceLifecycleService(u)
+	// A short in-memory snapshot exercises expiry without waiting five minutes.
+	// Persisted snapshots are validated at admission and by the database.
+	svc.executeIntelligenceRun(context.Background(), &IntelligenceRun{ScheduledTestResult: ScheduledTestResult{ID: 1, ModelSnapshot: "gpt-5.4", PromptSnapshot: "Write HTML"}, AccountID: 1, ExecutionTimeoutSeconds: 1})
+	result := <-repo.completed
+	require.Equal(t, "failed", result.Status)
+	require.Equal(t, "execution_timeout", result.ErrorCode)
+	require.Equal(t, u.text, result.ResponseText)
+	require.Contains(t, result.ErrorMessage, "context deadline exceeded")
+	require.Less(t, result.LatencyMs, int64(4000))
 }

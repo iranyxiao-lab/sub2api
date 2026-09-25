@@ -2680,6 +2680,7 @@ func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader)
 
 	for {
 		line, err := reader.ReadString('\n')
+		observeIntelligenceStreamLine(c, line)
 		if err != nil {
 			if err == io.EOF {
 				s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
@@ -2812,6 +2813,7 @@ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader)
 
 	for {
 		line, err := reader.ReadString('\n')
+		observeIntelligenceStreamLine(c, line)
 		if err != nil {
 			if err == io.EOF {
 				s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
@@ -2869,6 +2871,7 @@ func (s *AccountTestService) processOpenAIChatCompletionsStream(c *gin.Context, 
 
 	for {
 		line, err := reader.ReadString('\n')
+		observeIntelligenceStreamLine(c, line)
 		if err != nil {
 			if err == io.EOF {
 				if seenFinish {
@@ -2943,6 +2946,7 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 
 	for {
 		line, err := reader.ReadString('\n')
+		observeIntelligenceStreamLine(c, line)
 		if err != nil {
 			if err == io.EOF {
 				if seenCompleted {
@@ -3262,6 +3266,11 @@ func (s *AccountTestService) sendEvent(c *gin.Context, event TestEvent) {
 			}
 		}
 	}
+	if event.Type == "test_complete" && event.Success {
+		if value, ok := c.Get(intelligenceStreamDiagnosticsKey); ok {
+			value.(*intelligenceStreamDiagnostics).completed = true
+		}
+	}
 	eventJSON, _ := json.Marshal(event)
 	if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", eventJSON); err != nil {
 		log.Printf("failed to write SSE event: %v", err)
@@ -3292,6 +3301,11 @@ func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID in
 	}
 	if prompt != "" {
 		ginCtx.Set(accountTestIntelligenceProbeKey, true)
+		diagnostics := &intelligenceStreamDiagnostics{started: startedAt, firstEventMs: -1, lastEventMs: -1}
+		ginCtx.Set(intelligenceStreamDiagnosticsKey, diagnostics)
+		defer func() {
+			log.Printf("[IntelligenceStream] account=%d first_event_ms=%d last_event_ms=%d completed=%t total_ms=%d", accountID, diagnostics.firstEventMs, diagnostics.lastEventMs, diagnostics.completed, time.Since(startedAt).Milliseconds())
+		}()
 		account, err := s.accountRepo.GetByID(ctx, accountID)
 		if err != nil {
 			return nil, err

@@ -1333,3 +1333,7 @@ image_storage:
   presign_expiry_hours: 24
   # 当上游返回的是图片 url 时，下载该图片再转存的字节上限（默认 32MB）
   max_download_bytes: 33554432
+
+# 智力测试总执行时限；仅影响新入队任务（30–1800 秒，0 使用默认 300）。
+intelligence_test:
+  execution_timeout_seconds: 300

@@ -6,7 +6,7 @@
           <p class="truncate font-medium">{{ accountName || '#' + accountId }}</p>
           <p class="mt-1 text-xs text-gray-500">{{ plan?.model_id || t('admin.intelligence.notConfigured') }} · {{ plan?.enabled ? t('admin.intelligence.scheduleOn') : t('admin.intelligence.scheduleOff') }}</p>
         </div>
-        <button class="btn btn-primary" :disabled="loading || busy || activeCount > 0" @click="plan ? runNow() : tab = 'settings'">
+        <button class="btn btn-primary" :disabled="loading || busy || activeCount > 0" @click="runNow">
           <Icon name="play" size="sm" /> {{ busy ? t('admin.intelligence.submitting') : activeCount ? t('admin.intelligence.state_running') : t('admin.intelligence.runNow') }}
         </button>
       </div>
@@ -34,22 +34,24 @@
         </template>
       </div>
       <div v-if="accountId && tab === 'settings'" class="space-y-4">
-        <div class="grid gap-4 rounded-xl border border-gray-200 p-4 sm:grid-cols-2 dark:border-dark-600">
+        <fieldset :disabled="busy" class="grid gap-4 rounded-xl border border-gray-200 p-4 sm:grid-cols-2 dark:border-dark-600">
           <div><label class="input-label mb-1 block">{{ t('admin.scheduledTests.model') }}</label><Select v-model="form.model_id" :options="availableModels" searchable :placeholder="t('admin.intelligence.selectModel')" /><p v-if="!modelOptions.length" class="mt-1 text-xs text-gray-500">{{ t('admin.intelligence.modelsUnavailable') }}</p></div>
           <div class="flex items-center justify-between gap-2"><label>{{ t('admin.intelligence.scheduleOn') }}</label><Toggle v-model="form.enabled" /></div>
           <label class="sm:col-span-2">{{ t('admin.intelligence.customPrompt') }}<textarea v-model="form.custom_prompt" maxlength="4000" rows="3" class="input mt-1 w-full" /></label>
           <fieldset class="sm:col-span-2"><legend class="mb-2 font-medium">{{ t('admin.intelligence.selectQuestions') }}</legend>
             <p v-if="questionsError" class="text-red-600">{{ t('admin.intelligence.bankLoadFailed') }} <button class="underline" @click="loadQuestions">{{ t('admin.intelligence.refresh') }}</button></p>
             <div class="grid max-h-52 gap-2 overflow-y-auto sm:grid-cols-2">
-              <label v-for="question in questions" :key="question.id" class="flex items-start gap-2 rounded-lg border border-gray-200 p-3 dark:border-dark-600"><input v-model="form.question_ids" type="checkbox" :value="question.id" class="mt-1" /><span>{{ question.title }}</span></label>
+              <label v-for="question in questions" :key="question.id" class="flex items-start gap-2 rounded-lg border border-gray-200 p-3 dark:border-dark-600"><input v-model="selectedQuestionId" type="radio" :name="`intelligence-question-${accountId}`" :value="question.id" class="mt-1" /><span>{{ question.title }}</span></label>
             </div>
+            <p class="mt-2 text-xs text-gray-500">{{ t('admin.intelligence.currentSelectionHint') }}</p>
+            <p v-if="form.question_ids.length > 1" class="mt-2 text-amber-600" role="alert">{{ t('admin.intelligence.chooseSingleQuestion') }}</p>
             <button class="mt-2 text-primary-600" @click="tab = 'bank'">{{ t('admin.intelligence.manageBank') }}</button>
           </fieldset>
           <div v-if="form.enabled"><label class="input-label mb-1 block">{{ t('admin.intelligence.frequency') }}</label><Select :model-value="preset" :options="presets" @update:model-value="setPreset" /></div>
           <label v-if="form.enabled">{{ t('admin.scheduledTests.cronExpression') }}<input v-model="form.cron_expression" class="input mt-1 w-full" /><span class="mt-1 block text-xs text-gray-500">{{ t('admin.intelligence.scheduleHint') }}</span></label>
           <label>{{ t('admin.scheduledTests.maxResults') }}<input v-model.number="form.max_results" type="number" min="1" max="200" class="input mt-1 w-full" /></label>
           <p class="self-end text-xs text-gray-500">{{ t('admin.scheduledTests.nextRun') }}: {{ plan?.enabled && plan.next_run_at ? formatDateTime(plan.next_run_at) : '-' }}</p>
-        </div>
+        </fieldset>
         <div class="flex flex-wrap gap-2">
           <button class="btn btn-primary" :disabled="busy || !validForm" @click="savePlan(false)">{{ t('common.save') }}</button>
           <button class="btn btn-secondary" :disabled="busy || !validForm || activeCount > 0" @click="savePlan(true)">{{ t('admin.intelligence.saveAndRun') }}</button>
@@ -119,7 +121,17 @@ const activeCount = ref(0)
 const now = ref(Date.now())
 const defaults = () => ({ model_id: '', cron_expression: '0 9 * * *', question_ids: [] as number[], custom_prompt: '', max_results: 100, enabled: false })
 const form = reactive(defaults())
-const validForm = computed(() => Boolean(form.model_id && form.question_ids.length && form.max_results >= 1 && form.max_results <= 200))
+const selectedQuestionId = computed({
+  get: () => form.question_ids.length === 1 ? form.question_ids[0] : null,
+  set: (id: number | null) => { form.question_ids = id === null ? [] : [id] }
+})
+const validForm = computed(() => Boolean(form.model_id && form.question_ids.length === 1 && form.max_results >= 1 && form.max_results <= 200))
+const formChanged = computed(() => {
+  const saved = plan.value
+  return !saved || form.model_id !== saved.model_id || form.custom_prompt !== saved.custom_prompt ||
+    form.enabled !== saved.enabled || form.cron_expression !== saved.cron_expression ||
+    form.max_results !== saved.max_results || JSON.stringify(form.question_ids) !== JSON.stringify(saved.question_ids)
+})
 const availableModels = computed(() => form.model_id && !props.modelOptions.some(m => m.value === form.model_id) ? [{ value: form.model_id, label: form.model_id }, ...props.modelOptions] : props.modelOptions)
 const statusOptions = computed(() => [{ value: '', label: t('admin.intelligence.allStatuses') }, ...['queued', 'running', 'success', 'failed', 'interrupted'].map(value => ({ value, label: t(`admin.intelligence.state_${value}`) }))])
 const presets = computed(() => [{ value: '*/30 * * * *', label: t('admin.intelligence.every30Minutes') }, { value: '0 * * * *', label: t('admin.intelligence.hourly') }, { value: '0 9 * * *', label: t('admin.intelligence.daily') }, { value: 'custom', label: t('admin.intelligence.customSchedule') }])
@@ -201,6 +213,12 @@ onMounted(() => { document.addEventListener('visibilitychange', visibilityChange
 onUnmounted(() => { generation++; accountController?.abort(); historyController?.abort(); clearTimeout(timer); clearInterval(clockTimer); document.removeEventListener('visibilitychange', visibilityChanged) })
 
 const runNow = async () => {
+  if (loading.value || busy.value || activeCount.value) return
+  if (!validForm.value) { tab.value = 'settings'; return }
+  if (formChanged.value) await savePlan(true)
+  else await submitRun()
+}
+const submitRun = async () => {
   if (!plan.value || busy.value || activeCount.value) return
   const id = plan.value.id
   const epoch = generation
@@ -227,7 +245,13 @@ const runNow = async () => {
   finally { busy.value = false }
 }
 const savePlan = async (start: boolean) => {
-  if (!props.accountId || busy.value || !validForm.value) return
+  if (!props.accountId || loading.value || busy.value || !validForm.value || (start && activeCount.value)) return
+  // Do not reuse an unresolved request for a different selection or silently run its old snapshot.
+  if (plan.value && formChanged.value && submissionKeys.has(plan.value.id)) {
+    app.showError(t('admin.intelligence.pendingSubmission'))
+    void refreshHistory()
+    return
+  }
   const epoch = generation
   const accountId = props.accountId
   const currentPlan = plan.value
@@ -241,7 +265,7 @@ const savePlan = async (start: boolean) => {
   finally { busy.value = false }
   if (epoch !== generation) return
   // A subsequent submission failure must not be reported as a failed save.
-  if (start) await runNow()
+  if (start) await submitRun()
   else await refreshHistory()
 }
 const startNewQuestion = () => { editingQuestion.value = { id: 0, title: '', prompt: '', built_in: false } }

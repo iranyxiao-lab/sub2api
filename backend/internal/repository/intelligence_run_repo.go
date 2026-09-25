@@ -13,7 +13,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const runColumns = resultColumns + `, trigger_type, COALESCE(run_token,'')`
+const runColumns = resultColumns + `, trigger_type, COALESCE(run_token,''), execution_timeout_seconds`
 
 func decodeRunQuestion(snapshot []byte, result *service.ScheduledTestResult) error {
 	if len(snapshot) == 0 {
@@ -26,7 +26,7 @@ func scanIntelligenceRun(row scannable) (*service.IntelligenceRun, error) {
 	r := &service.IntelligenceRun{}
 	var snapshot []byte
 	b := &r.ScheduledTestResult
-	err := row.Scan(&b.ID, &b.PlanID, &b.Status, &b.ResponseText, &b.ErrorMessage, &b.LatencyMs, &b.StartedAt, &b.FinishedAt, &b.CreatedAt, &snapshot, &b.PromptSnapshot, &b.ModelSnapshot, &b.ErrorCode, &b.OutputTruncated, &r.TriggerType, &r.RunToken)
+	err := row.Scan(&b.ID, &b.PlanID, &b.Status, &b.ResponseText, &b.ErrorMessage, &b.LatencyMs, &b.StartedAt, &b.FinishedAt, &b.CreatedAt, &snapshot, &b.PromptSnapshot, &b.ModelSnapshot, &b.ErrorCode, &b.OutputTruncated, &r.TriggerType, &r.RunToken, &r.ExecutionTimeoutSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,10 @@ func lockRunAdmission(ctx context.Context, tx *sql.Tx) error {
 	return err
 }
 
-func (r *scheduledTestResultRepository) EnqueueIntelligenceRun(ctx context.Context, planID int64, requestKey, trigger string, nextRun *time.Time) (*service.IntelligenceRun, error) {
+func (r *scheduledTestResultRepository) EnqueueIntelligenceRun(ctx context.Context, planID int64, requestKey, trigger string, nextRun *time.Time, timeoutSeconds int) (*service.IntelligenceRun, error) {
+	if timeoutSeconds < 30 || timeoutSeconds > 1800 {
+		return nil, fmt.Errorf("intelligence execution timeout must be between 30 and 1800 seconds")
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -77,7 +80,7 @@ func (r *scheduledTestResultRepository) EnqueueIntelligenceRun(ctx context.Conte
 		return nil, service.ErrIntelligenceNotDue
 	}
 	token := uuid.NewString()
-	res, err := tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET claimed_until=NOW()+INTERVAL '13 minutes', claim_token=$2 WHERE id=$1 AND (claimed_until IS NULL OR claimed_until<NOW())`, planID, token)
+	res, err := tx.ExecContext(ctx, `UPDATE scheduled_test_plans SET claimed_until=NOW()+make_interval(secs => $3), claim_token=$2 WHERE id=$1 AND (claimed_until IS NULL OR claimed_until<NOW())`, planID, token, 600+timeoutSeconds+30)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +96,7 @@ func (r *scheduledTestResultRepository) EnqueueIntelligenceRun(ctx context.Conte
 		return nil, err
 	}
 	prompt := strings.TrimSpace(plan.CustomPrompt + "\n\n" + q.Prompt)
-	run, err := scanIntelligenceRun(tx.QueryRowContext(ctx, `INSERT INTO scheduled_test_results(plan_id,status,question_snapshot,prompt_snapshot,model_snapshot,request_key,trigger_type,run_token) VALUES($1,'queued',$2,$3,$4,$5,$6,$7) RETURNING `+runColumns, planID, questionJSON(q), prompt, plan.ModelID, requestKey, trigger, token))
+	run, err := scanIntelligenceRun(tx.QueryRowContext(ctx, `INSERT INTO scheduled_test_results(plan_id,status,question_snapshot,prompt_snapshot,model_snapshot,request_key,trigger_type,run_token,execution_timeout_seconds) VALUES($1,'queued',$2,$3,$4,$5,$6,$7,$8) RETURNING `+runColumns, planID, questionJSON(q), prompt, plan.ModelID, requestKey, trigger, token, timeoutSeconds))
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +137,7 @@ func (r *scheduledTestResultRepository) ClaimIntelligenceRun(ctx context.Context
 	if busy {
 		return nil, tx.Commit()
 	}
-	run, err := scanIntelligenceRun(tx.QueryRowContext(ctx, `UPDATE scheduled_test_results SET status='running', started_at=NOW(), lease_until=NOW()+INTERVAL '150 seconds'
+	run, err := scanIntelligenceRun(tx.QueryRowContext(ctx, `UPDATE scheduled_test_results SET status='running', started_at=NOW(), lease_until=NOW()+make_interval(secs => execution_timeout_seconds+30)
  WHERE id=(SELECT id FROM scheduled_test_results WHERE status='queued' ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING `+runColumns))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, tx.Commit()

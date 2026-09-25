@@ -72,7 +72,7 @@ type ScheduledTestResultRepository interface {
 	Create(ctx context.Context, result *ScheduledTestResult) (*ScheduledTestResult, error)
 	ListByPlanID(ctx context.Context, planID int64, limit int) ([]*ScheduledTestResult, error)
 	PruneOldResults(ctx context.Context, planID int64, keepCount int) error
-	EnqueueIntelligenceRun(ctx context.Context, planID int64, requestKey, trigger string, nextRun *time.Time) (*IntelligenceRun, error)
+	EnqueueIntelligenceRun(ctx context.Context, planID int64, requestKey, trigger string, nextRun *time.Time, timeoutSeconds int) (*IntelligenceRun, error)
 	ClaimIntelligenceRun(ctx context.Context) (*IntelligenceRun, error)
 	CompleteIntelligenceRun(ctx context.Context, run *IntelligenceRun, result *ScheduledTestResult) error
 	GetIntelligenceRun(ctx context.Context, planID, runID int64) (*IntelligenceRun, error)
@@ -82,13 +82,14 @@ type ScheduledTestResultRepository interface {
 // Nullable lifecycle times avoid presenting queued work as already completed.
 type IntelligenceRun struct {
 	ScheduledTestResult
-	QueuedAt    time.Time  `json:"queued_at"`
-	StartedAt   *time.Time `json:"started_at"`
-	FinishedAt  *time.Time `json:"finished_at"`
-	TriggerType string     `json:"trigger_type"`
-	RunToken    string     `json:"-"`
-	AccountID   int64      `json:"-"`
-	MaxResults  int        `json:"-"`
+	ExecutionTimeoutSeconds int        `json:"execution_timeout_seconds"`
+	QueuedAt                time.Time  `json:"queued_at"`
+	StartedAt               *time.Time `json:"started_at"`
+	FinishedAt              *time.Time `json:"finished_at"`
+	TriggerType             string     `json:"trigger_type"`
+	RunToken                string     `json:"-"`
+	AccountID               int64      `json:"-"`
+	MaxResults              int        `json:"-"`
 }
 
 type IntelligenceRunPage struct {
